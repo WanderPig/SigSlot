@@ -80,6 +80,7 @@
 
 #include <set>
 #include <list>
+#include <functional>
 
 #if defined(SIGSLOT_PURE_ISO) || (!defined(WIN32) && !defined(__GNUG__) && !defined(SIGSLOT_USE_POSIX_THREADS))
 #   define _SIGSLOT_SINGLE_THREADED
@@ -437,18 +438,9 @@ namespace sigslot {
         class _connection : public _connection_base<mt_policy, args...>
         {
         public:
-            _connection()
-            {
-                this->pobject = NULL;
-                this->pmemfun = NULL;
-            }
-
-            _connection(dest_type* pobject, void (dest_type::*pmemfun)(args... a))
-            {
-                m_pobject = pobject;
-                m_pmemfun = pmemfun;
-            }
-
+            _connection(dest_type* pobject, std::function<void(args... a)> fn)
+            : m_pobject(pobject), m_fn(fn) {}
+            
             virtual _connection_base<mt_policy, args...>* clone()
             {
                 return new _connection<dest_type, mt_policy, args...>(*this);
@@ -456,12 +448,12 @@ namespace sigslot {
 
             virtual _connection_base<mt_policy, args...>* duplicate(has_slots<mt_policy>* pnewdest)
             {
-                return new _connection<dest_type, mt_policy, args...>((dest_type *)pnewdest, m_pmemfun);
+                return new _connection<dest_type, mt_policy, args...>((dest_type *)pnewdest, m_fn);
             }
 
             virtual void emit(args... a)
             {
-                (m_pobject->*m_pmemfun)(a...);
+                m_fn(a...);
             }
 
             virtual has_slots<mt_policy>* getdest() const
@@ -471,7 +463,7 @@ namespace sigslot {
 
         private:
             dest_type* m_pobject;
-            void (dest_type::* m_pmemfun)(args...);
+            std::function<void(args...)> m_fn;
         };
     }
 
@@ -541,7 +533,7 @@ namespace sigslot {
 
 
 
-    template<class mt_policy = SIGSLOT_DEFAULT_MT_POLICY, class... args>
+    template<typename mt_policy = SIGSLOT_DEFAULT_MT_POLICY, class... args>
     class signal : public internal::_signal_base<mt_policy, args...>
     {
     public:
@@ -558,12 +550,20 @@ namespace sigslot {
         }
 
         template<class desttype>
-        void connect(desttype* pclass, void (desttype::*pmemfun)(args...))
+        void connect(desttype* pclass, std::function<void(args...)> && fn)
         {
+            //typename mtpolicy * tmp = pclass; // Ensure it's the same mtpolicy.
             internal::lock_block<mt_policy> lock(this);
-            internal::_connection<desttype, mt_policy, args...>* conn = new internal::_connection<desttype, mt_policy, args...>(pclass, pmemfun);
+            internal::_connection<desttype, mt_policy, args...>* conn = new internal::_connection<desttype, mt_policy, args...>(pclass, fn);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
+        }
+        
+        // Helper for ptr-to-member; call the member function "normally".
+        template<class desttype>
+        void connect(desttype* pclass, void (desttype::* memfn)(args...))
+        {
+            this->connect(pclass, [pclass, memfn](args... a) {(pclass->*memfn)(a...);});
         }
 
         void emit(args... a)
