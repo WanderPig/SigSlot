@@ -129,6 +129,8 @@ namespace sigslot {
             {
                 ;
             }
+
+            void test(st const * p) const {}
         };
 
 #ifdef _SIGSLOT_HAS_WIN32_THREADS
@@ -167,6 +169,7 @@ namespace sigslot {
                 LeaveCriticalSection(get_critsec());
             }
 
+            void test(mtg const * p) const {}
         private:
             CRITICAL_SECTION* get_critsec()
             {
@@ -203,6 +206,7 @@ namespace sigslot {
                 LeaveCriticalSection(&m_critsec);
             }
 
+            void test(mt const * p) const {}
         private:
             CRITICAL_SECTION m_critsec;
         };
@@ -238,6 +242,7 @@ namespace sigslot {
                 pthread_mutex_unlock(get_mutex());
             }
 
+            void test(mtg const * p) const {}
         private:
             pthread_mutex_t* get_mutex()
             {
@@ -274,6 +279,7 @@ namespace sigslot {
                 pthread_mutex_unlock(&m_mutex);
             }
 
+            void test(mt const * p) const {}
         private:
             pthread_mutex_t m_mutex;
         };
@@ -326,8 +332,6 @@ namespace sigslot {
         {
         public:
             typedef typename std::list<_connection_base<mt_policy, args...> *>  connections_list;
-            typedef typename connections_list::const_iterator const_iterator;
-            typedef typename connections_list::iterator iterator;
 
             _signal_base()
             {
@@ -338,15 +342,9 @@ namespace sigslot {
             : _signal_base_lo<mt_policy>(s)
             {
                 lock_block<mt_policy> lock(this);
-                const_iterator  it = s.m_connected_slots.begin();
-                const_iterator itEnd = s.m_connected_slots.end();
-
-                while(it != itEnd)
-                {
-                    (*it)->getdest()->signal_connect(this);
-                    m_connected_slots.push_back((*it)->clone());
-
-                    ++it;
+                for (auto i : s.m_connected_slots) {
+                    i->getdest()->signal_connect(this);
+                    m_connected_slots.push_back(i->clone());
                 }
             }
 
@@ -358,75 +356,48 @@ namespace sigslot {
             void disconnect_all()
             {
                 lock_block<mt_policy> lock(this);
-                const_iterator it  = m_connected_slots.begin();
-                const_iterator itEnd = m_connected_slots.end();
-
-                while(it != itEnd)
-                {
-                    (*it)->getdest()->signal_disconnect(this);
-                    delete *it;
-
-                    ++it;
+                for (auto i : m_connected_slots) {
+                    i->getdest()->signal_disconnect(this);
+                    delete i;
                 }
-
                 m_connected_slots.erase(m_connected_slots.begin(), m_connected_slots.end());
             }
 
             void disconnect(has_slots<mt_policy>* pclass)
             {
                 lock_block<mt_policy> lock(this);
-                iterator it = m_connected_slots.begin();
-                iterator itEnd = m_connected_slots.end();
-
-                while(it != itEnd)
-                {
-                    if((*it)->getdest() == pclass)
-                    {
-                        delete *it;
-                        m_connected_slots.erase(it);
-                        pclass->signal_disconnect(this);
-                        return;
+                bool found{false};
+                m_connected_slots.remove_if([pclass, &found](_connection_base<mt_policy, args...> * x) {
+                    if (x->getdest() == pclass) {
+                        delete x;
+                        found = true;
+                        return true;
                     }
-
-                    ++it;
-                }
+                    return false;
+                });
+                if (found) pclass->signal_disconnect(this);
             }
 
             void slot_disconnect(has_slots<mt_policy>* pslot)
             {
                 lock_block<mt_policy> lock(this);
-                iterator it = m_connected_slots.begin();
-                iterator itEnd = m_connected_slots.end();
-
-                while(it != itEnd)
-                {
-                    iterator itNext = it;
-                    ++itNext;
-
-                    if((*it)->getdest() == pslot)
-                    {
-                        delete *it;
-                        m_connected_slots.erase(it);
+                m_connected_slots.remove_if([pslot](_connection_base<mt_policy, args...> * x) {
+                    if (x->getdest() == pslot) {
+                        delete x;
+                        return true;
                     }
-
-                    it = itNext;
-                }
+                    return false;
+                });
             }
 
             void slot_duplicate(const has_slots<mt_policy>* oldtarget, has_slots<mt_policy>* newtarget)
             {
                 lock_block<mt_policy> lock(this);
-                iterator it = m_connected_slots.begin();
-                iterator itEnd = m_connected_slots.end();
-
-                while(it != itEnd)
-                {
-                    if((*it)->getdest() == oldtarget)
+                for (auto i : m_connected_slots) {
+                    if(i->getdest() == oldtarget)
                     {
-                        m_connected_slots.push_back((*it)->duplicate(newtarget));
+                        m_connected_slots.push_back(i->duplicate(newtarget));
                     }
-
-                    ++it;
                 }
             }
 
@@ -472,7 +443,6 @@ namespace sigslot {
     {
     private:
         typedef typename std::set<internal::_signal_base_lo<mt_policy> *> sender_set;
-        typedef typename sender_set::const_iterator const_iterator;
 
     public:
         has_slots()
@@ -484,14 +454,9 @@ namespace sigslot {
         : mt_policy(hs)
         {
             internal::lock_block<mt_policy> lock(this);
-            const_iterator it = hs.m_senders.begin();
-            const_iterator itEnd = hs.m_senders.end();
-
-            while(it != itEnd)
-            {
-                (*it)->slot_duplicate(&hs, this);
-                m_senders.insert(*it);
-                ++it;
+            for (auto i : hs.m_senders) {
+                i->slot_duplicate(&hs, this);
+                m_senders.insert(i);
             }
         }
 
@@ -515,13 +480,8 @@ namespace sigslot {
         void disconnect_all()
         {
             internal::lock_block<mt_policy> lock(this);
-            const_iterator it = m_senders.begin();
-            const_iterator itEnd = m_senders.end();
-
-            while(it != itEnd)
-            {
-                (*it)->slot_disconnect(this);
-                ++it;
+            for (auto i : m_senders) {
+                i->slot_disconnect(this);
             }
 
             m_senders.erase(m_senders.begin(), m_senders.end());
@@ -552,7 +512,7 @@ namespace sigslot {
         template<class desttype>
         void connect(desttype* pclass, std::function<void(args...)> && fn)
         {
-            //typename mtpolicy * tmp = pclass; // Ensure it's the same mtpolicy.
+            this->test(pclass); // Ensure it's the same mt_policy.
             internal::lock_block<mt_policy> lock(this);
             internal::_connection<desttype, mt_policy, args...>* conn = new internal::_connection<desttype, mt_policy, args...>(pclass, fn);
             this->m_connected_slots.push_back(conn);
@@ -566,6 +526,7 @@ namespace sigslot {
             this->connect(pclass, [pclass, memfn](args... a) {(pclass->*memfn)(a...);});
         }
 
+        // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
             internal::lock_block<mt_policy> lock(this);
@@ -585,19 +546,7 @@ namespace sigslot {
 
         void operator()(args... a)
         {
-            internal::lock_block<mt_policy> lock(this);
-            const_iterator itNext, it = this->m_connected_slots.begin();
-            const_iterator itEnd = this->m_connected_slots.end();
-
-            while(it != itEnd)
-            {
-                itNext = it;
-                ++itNext;
-
-                (*it)->emit(a...);
-
-                it = itNext;
-            }
+            this->emit(a...);
         }
     };
 
