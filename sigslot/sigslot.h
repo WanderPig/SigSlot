@@ -95,24 +95,26 @@
 
 #ifndef SIGSLOT_DEFAULT_MT_POLICY
 #	ifdef _SIGSLOT_SINGLE_THREADED
-#		define SIGSLOT_DEFAULT_MT_POLICY single_threaded
+#		define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::st
 #	else
-#		define SIGSLOT_DEFAULT_MT_POLICY multi_threaded_local
+#		define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::mt
 #	endif
 #endif
 
 
 namespace sigslot {
     
-	class single_threaded
+    namespace thread {
+    
+	class st // Single threaded
 	{
 	public:
-		single_threaded()
+		st()
 		{
 			;
 		}
         
-		virtual ~single_threaded()
+		virtual ~st()
 		{
 			;
 		}
@@ -130,10 +132,10 @@ namespace sigslot {
     
 #ifdef _SIGSLOT_HAS_WIN32_THREADS
 	// The multi threading policies only get compiled in if they are enabled.
-	class multi_threaded_global
+	class mtg
 	{
 	public:
-		multi_threaded_global()
+		mtg()
 		{
 			static bool isinitialised = false;
             
@@ -144,12 +146,12 @@ namespace sigslot {
 			}
 		}
         
-		multi_threaded_global(const multi_threaded_global&)
+		mtg(const mtg&)
 		{
 			;
 		}
         
-		virtual ~multi_threaded_global()
+		virtual ~mtg()
 		{
 			;
 		}
@@ -172,20 +174,20 @@ namespace sigslot {
 		}
 	};
     
-	class multi_threaded_local
+	class mt
 	{
 	public:
-		multi_threaded_local()
+		mt()
 		{
 			InitializeCriticalSection(&m_critsec);
 		}
         
-		multi_threaded_local(const multi_threaded_local&)
+		mt(const mt&)
 		{
 			InitializeCriticalSection(&m_critsec);
 		}
         
-		virtual ~multi_threaded_local()
+		virtual ~mt()
 		{
 			DeleteCriticalSection(&m_critsec);
 		}
@@ -207,20 +209,20 @@ namespace sigslot {
     
 #ifdef _SIGSLOT_HAS_POSIX_THREADS
 	// The multi threading policies only get compiled in if they are enabled.
-	class multi_threaded_global
+	class mtg
 	{
 	public:
-		multi_threaded_global()
+		mtg()
 		{
 			pthread_mutex_init(get_mutex(), NULL);
 		}
         
-		multi_threaded_global(const multi_threaded_global&)
+		mtg(const mtg&)
 		{
 			;
 		}
         
-		virtual ~multi_threaded_global()
+		virtual ~mtg()
 		{
 			;
 		}
@@ -243,20 +245,20 @@ namespace sigslot {
 		}
 	};
     
-	class multi_threaded_local
+	class mt
 	{
 	public:
-		multi_threaded_local()
+		mt()
 		{
 			pthread_mutex_init(&m_mutex, NULL);
 		}
         
-		multi_threaded_local(const multi_threaded_local&)
+		mt(const mt&)
 		{
 			pthread_mutex_init(&m_mutex, NULL);
 		}
         
-        virtual ~multi_threaded_local()
+        virtual ~mt()
 		{
 			pthread_mutex_destroy(&m_mutex);
 		}
@@ -275,7 +277,12 @@ namespace sigslot {
 		pthread_mutex_t m_mutex;
 	};
 #endif // _SIGSLOT_HAS_POSIX_THREADS
+	}
     
+	template<class mt_policy>
+	class has_slots;
+    
+    namespace internal {
 	template<class mt_policy>
 	class lock_block
 	{
@@ -294,9 +301,6 @@ namespace sigslot {
 		}
 	};
     
-	template<class mt_policy>
-	class has_slots;
-    
 	template<class mt_policy, class... args>
 	class _connection_base
 	{
@@ -314,70 +318,6 @@ namespace sigslot {
 	public:
 		virtual void slot_disconnect(has_slots<mt_policy>* pslot) = 0;
 		virtual void slot_duplicate(const has_slots<mt_policy>* poldslot, has_slots<mt_policy>* pnewslot) = 0;
-	};
-    
-	template<class  mt_policy = SIGSLOT_DEFAULT_MT_POLICY>
-	class has_slots : public mt_policy 
-	{
-	private:
-		typedef typename std::set<_signal_base_lo<mt_policy> *> sender_set;
-		typedef typename sender_set::const_iterator const_iterator;
-        
-	public:
-		has_slots()
-		{
-			;
-		}
-        
-		has_slots(const has_slots& hs)
-        : mt_policy(hs)
-		{
-			lock_block<mt_policy> lock(this);
-			const_iterator it = hs.m_senders.begin();
-			const_iterator itEnd = hs.m_senders.end();
-            
-			while(it != itEnd)
-			{
-				(*it)->slot_duplicate(&hs, this);
-				m_senders.insert(*it);
-				++it;
-			}
-		} 
-        
-		void signal_connect(_signal_base_lo<mt_policy>* sender)
-		{
-			lock_block<mt_policy> lock(this);
-			m_senders.insert(sender);
-		}
-        
-		void signal_disconnect(_signal_base_lo<mt_policy>* sender)
-		{
-			lock_block<mt_policy> lock(this);
-			m_senders.erase(sender);
-		}
-        
-		virtual ~has_slots()
-		{
-			disconnect_all();
-		}
-        
-		void disconnect_all()
-		{
-			lock_block<mt_policy> lock(this);
-			const_iterator it = m_senders.begin();
-			const_iterator itEnd = m_senders.end();
-            
-			while(it != itEnd)
-			{
-				(*it)->slot_disconnect(this);
-				++it;
-			}
-            
-			m_senders.erase(m_senders.begin(), m_senders.end());
-		}
-        
-	private:
-		sender_set m_senders;
 	};
     
 	template<class mt_policy, class... args>
@@ -533,19 +473,86 @@ namespace sigslot {
 		dest_type* m_pobject;
 		void (dest_type::* m_pmemfun)(args...);
 	};
+	}
+
+	template<class  mt_policy = SIGSLOT_DEFAULT_MT_POLICY>
+	class has_slots : public mt_policy 
+	{
+	private:
+		typedef typename std::set<internal::_signal_base_lo<mt_policy> *> sender_set;
+		typedef typename sender_set::const_iterator const_iterator;
+        
+	public:
+		has_slots()
+		{
+			;
+		}
+        
+		has_slots(const has_slots& hs)
+        : mt_policy(hs)
+		{
+			internal::lock_block<mt_policy> lock(this);
+			const_iterator it = hs.m_senders.begin();
+			const_iterator itEnd = hs.m_senders.end();
+            
+			while(it != itEnd)
+			{
+				(*it)->slot_duplicate(&hs, this);
+				m_senders.insert(*it);
+				++it;
+			}
+		} 
+        
+		void signal_connect(internal::_signal_base_lo<mt_policy>* sender)
+		{
+			internal::lock_block<mt_policy> lock(this);
+			m_senders.insert(sender);
+		}
+        
+		void signal_disconnect(internal::_signal_base_lo<mt_policy>* sender)
+		{
+			internal::lock_block<mt_policy> lock(this);
+			m_senders.erase(sender);
+		}
+        
+		virtual ~has_slots()
+		{
+			disconnect_all();
+		}
+        
+		void disconnect_all()
+		{
+			internal::lock_block<mt_policy> lock(this);
+			const_iterator it = m_senders.begin();
+			const_iterator itEnd = m_senders.end();
+            
+			while(it != itEnd)
+			{
+				(*it)->slot_disconnect(this);
+				++it;
+			}
+            
+			m_senders.erase(m_senders.begin(), m_senders.end());
+		}
+        
+	private:
+		sender_set m_senders;
+	};
+    
+
         
 	template<class mt_policy = SIGSLOT_DEFAULT_MT_POLICY, class... args>
-	class signal : public _signal_base<mt_policy, args...>
+	class signal : public internal::_signal_base<mt_policy, args...>
 	{
 	public:
-    	typedef typename _signal_base<mt_policy, args...>::connections_list::const_iterator const_iterator;
+    	typedef typename internal::_signal_base<mt_policy, args...>::connections_list::const_iterator const_iterator;
 		signal()
 		{
 			;
 		}
         
 		signal(const signal<mt_policy, args...>& s)
-        : _signal_base<mt_policy, args...>(s)
+        : internal::_signal_base<mt_policy, args...>(s)
 		{
 			;
 		}
@@ -553,16 +560,15 @@ namespace sigslot {
 		template<class desttype>
         void connect(desttype* pclass, void (desttype::*pmemfun)(args...))
 		{
-			lock_block<mt_policy> lock(this);
-			_connection<desttype, mt_policy, args...>* conn = 
-            new _connection<desttype, mt_policy, args...>(pclass, pmemfun);
+			internal::lock_block<mt_policy> lock(this);
+			internal::_connection<desttype, mt_policy, args...>* conn = new internal::_connection<desttype, mt_policy, args...>(pclass, pmemfun);
 			this->m_connected_slots.push_back(conn);
 			pclass->signal_connect(this);
 		}
         
 		void emit(args... a)
 		{
-			lock_block<mt_policy> lock(this);
+			internal::lock_block<mt_policy> lock(this);
 			const_iterator itNext, it = this->m_connected_slots.begin();
 			const_iterator itEnd = this->m_connected_slots.end();
             
@@ -577,9 +583,9 @@ namespace sigslot {
 			}
 		}
         
-		void operator()()
+		void operator()(args... a)
 		{
-			lock_block<mt_policy> lock(this);
+			internal::lock_block<mt_policy> lock(this);
 			const_iterator itNext, it = this->m_connected_slots.begin();
 			const_iterator itEnd = this->m_connected_slots.end();
             
@@ -588,14 +594,14 @@ namespace sigslot {
 				itNext = it;
 				++itNext;
                 
-				(*it)->emit();
+				(*it)->emit(a...);
                 
 				it = itNext;
 			}
 		}
 	};
     
-}; // namespace sigslot
+} // namespace sigslot
 
 #endif // SIGSLOT_H__
 

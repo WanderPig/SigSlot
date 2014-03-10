@@ -3,8 +3,8 @@
 
 class Source {
 public:
-	mutable sigslot::signal<sigslot::multi_threaded_local> signal_zero;
-	mutable sigslot::signal<sigslot::multi_threaded_local, bool> signal_bool;
+	mutable sigslot::signal<sigslot::thread::mt> signal_zero;
+	mutable sigslot::signal<sigslot::thread::mt, bool> signal_bool;
 	
 	Source() = default;
 	Source(Source &) = delete;
