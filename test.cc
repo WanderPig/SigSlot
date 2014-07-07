@@ -1,5 +1,6 @@
 #include <sigslot/sigslot.h>
 #include <iostream>
+#include <map>
 
 class Source {
 public:
@@ -31,8 +32,29 @@ public:
 		 */
 		signal_zero();
 	}
+	typedef sigslot::signal<sigslot::thread::mt, Source &, std::string const &, bool> domain_callback_t;
+	domain_callback_t & callback(std::string const & domain) {
+		/*
+		 * Sometimes, you might want to have a callback that's
+		 * safely decoupled. This is one way of doing this.
+		 */
+		// TODO : Initiate a connect, or whatever.
+		return m_callbacks[domain];
+	}
+	void connect_done(std::string const & domain) {
+		/*
+		 * Normally one would do something in an event loop here.
+		 * This example is obviously trivial.
+		 */
+		auto it = m_callbacks.find(domain);
+		if (it != m_callbacks.end()) {
+			(*it).second.emit(*this, domain, true);
+			m_callbacks.erase(it); // Don't forget to erase when done.
+		}
+	}
 private:
 	bool m_toggle{true};
+	std::map<std::string,domain_callback_t> m_callbacks;
 };
 
 /*
@@ -58,6 +80,10 @@ public:
 	 */
 	void slot_void() {
 		std::cout << "Signalled void." << std::endl;
+	}
+
+	void connected(Source & s, std::string const & domain, bool ok) {
+		std::cout << "Domain " << domain << " connected" << std::endl;
 	}
 };
 
@@ -103,6 +129,15 @@ int main() {
 		std::cout << "Bool: ";
 		source.kerpling();
 		source.boioing();
+
+		/*
+		 * Callbacks in this model work similarly:
+		 */
+		source.callback("dave.cridland.net").connect(&sink, &Sink::connected);
+		// Wrong domain:
+		source.connect_done("cridland.im");
+		// Right domain:
+		source.connect_done("dave.cridland.net");
 
 		{
 			Source source2;
