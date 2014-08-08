@@ -1,6 +1,7 @@
 #include <sigslot/sigslot.h>
 #include <iostream>
 #include <map>
+#include <string>
 
 class Source {
 public:
