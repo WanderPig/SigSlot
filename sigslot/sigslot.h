@@ -312,6 +312,8 @@ namespace sigslot {
         class _connection_base
         {
         public:
+            bool one_shot = false;
+            bool expired = false;
             virtual ~_connection_base() { }
             virtual has_slots<mt_policy>* getdest() const = 0;
             virtual void emit(args...) = 0;
@@ -333,13 +335,13 @@ namespace sigslot {
         public:
             typedef typename std::list<_connection_base<mt_policy, args...> *>  connections_list;
 
-            _signal_base()
+            _signal_base() : _signal_base_lo<mt_policy>(), m_connected_slots()
             {
                 ;
             }
 
             _signal_base(const _signal_base& s)
-            : _signal_base_lo<mt_policy>(s)
+                    : _signal_base_lo<mt_policy>(s), m_connected_slots()
             {
                 lock_block<mt_policy> lock(this);
                 for (auto i : s.m_connected_slots) {
@@ -347,6 +349,8 @@ namespace sigslot {
                     m_connected_slots.push_back(i->clone());
                 }
             }
+
+            _signal_base(_signal_base &&) = delete;
 
             ~_signal_base()
             {
@@ -409,17 +413,19 @@ namespace sigslot {
         class _connection : public _connection_base<mt_policy, args...>
         {
         public:
-            _connection(dest_type* pobject, std::function<void(args... a)> fn)
-            : m_pobject(pobject), m_fn(fn) {}
+            _connection(dest_type *pobject, std::function<void(args... a)> fn, bool once)
+                    : m_pobject(pobject), m_fn(fn) { _connection_base<mt_policy, args...>::one_shot = once; }
             
             virtual _connection_base<mt_policy, args...>* clone()
             {
-                return new _connection<dest_type, mt_policy, args...>(*this);
+                return new _connection<dest_type, mt_policy, args...>(m_pobject, m_fn,
+                                                                      _connection_base<mt_policy, args...>::one_shot);
             }
 
             virtual _connection_base<mt_policy, args...>* duplicate(has_slots<mt_policy>* pnewdest)
             {
-                return new _connection<dest_type, mt_policy, args...>((dest_type *)pnewdest, m_fn);
+                return new _connection<dest_type, mt_policy, args...>((dest_type *) pnewdest, m_fn,
+                                                                      _connection_base<mt_policy, args...>::one_shot);
             }
 
             virtual void emit(args... a)
@@ -431,7 +437,6 @@ namespace sigslot {
             {
                 return m_pobject;
             }
-
         private:
             dest_type* m_pobject;
             std::function<void(args...)> m_fn;
@@ -445,13 +450,13 @@ namespace sigslot {
         typedef typename std::set<internal::_signal_base_lo<mt_policy> *> sender_set;
 
     public:
-        has_slots()
+        has_slots() : mt_policy(), m_senders()
         {
             ;
         }
 
         has_slots(const has_slots& hs)
-        : mt_policy(hs)
+                : mt_policy(hs), m_senders()
         {
             internal::lock_block<mt_policy> lock(this);
             for (auto i : hs.m_senders) {
@@ -459,6 +464,8 @@ namespace sigslot {
                 m_senders.insert(i);
             }
         }
+
+        has_slots(has_slots &&) = delete;
 
         void signal_connect(internal::_signal_base_lo<mt_policy>* sender)
         {
@@ -510,20 +517,21 @@ namespace sigslot {
         }
 
         template<class desttype>
-        void connect(desttype* pclass, std::function<void(args...)> && fn)
+        void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
             this->test(pclass); // Ensure it's the same mt_policy.
             internal::lock_block<mt_policy> lock(this);
-            internal::_connection<desttype, mt_policy, args...>* conn = new internal::_connection<desttype, mt_policy, args...>(pclass, fn);
+            internal::_connection<desttype, mt_policy, args...> *conn = new internal::_connection<desttype, mt_policy, args...>(
+                    pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
         }
         
         // Helper for ptr-to-member; call the member function "normally".
         template<class desttype>
-        void connect(desttype* pclass, void (desttype::* memfn)(args...))
+        void connect(desttype *pclass, void (desttype::* memfn)(args...), bool one_shot = false)
         {
-            this->connect(pclass, [pclass, memfn](args... a) {(pclass->*memfn)(a...);});
+            this->connect(pclass, [pclass, memfn](args... a) { (pclass->*memfn)(a...); }, one_shot);
         }
 
         // This code uses the long-hand because it assumes it may mutate the list.
@@ -539,8 +547,24 @@ namespace sigslot {
                 ++itNext;
 
                 (*it)->emit(a...);
+                if ((*it)->one_shot) {
+                    (*it)->expired = true;
+                }
 
                 it = itNext;
+            }
+
+            this->m_connected_slots.remove_if([this](internal::_connection_base<mt_policy, args...> *x) {
+                if (x->expired) {
+                    x->getdest()->signal_disconnect(this);
+                    delete x;
+                    return true;
+                }
+                return false;
+            });
+            // Might need to reconnect new signals. This needs improvement...
+            for (auto const conn : this->m_connected_slots) {
+                conn->getdest()->signal_connect(this);
             }
         }
 
