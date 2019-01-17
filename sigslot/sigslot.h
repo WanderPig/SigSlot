@@ -81,269 +81,51 @@
 #include <set>
 #include <list>
 #include <functional>
-
-#if defined(SIGSLOT_PURE_ISO) || (!defined(WIN32) && !defined(__GNUG__) && !defined(SIGSLOT_USE_POSIX_THREADS))
-#   define _SIGSLOT_SINGLE_THREADED
-#elif defined(WIN32)
-#   define _SIGSLOT_HAS_WIN32_THREADS
-#   include <windows.h>
-#elif defined(__GNUG__) || defined(SIGSLOT_USE_POSIX_THREADS)
-#   define _SIGSLOT_HAS_POSIX_THREADS
-#   include <pthread.h>
-#else
-#   define _SIGSLOT_SINGLE_THREADED
-#endif
-
-#ifndef SIGSLOT_DEFAULT_MT_POLICY
-#   ifdef _SIGSLOT_SINGLE_THREADED
-#       define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::st
-#   else
-#       define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::mt
-#   endif
-#endif
-
+#include <mutex>
 
 namespace sigslot {
 
-    namespace thread {
-
-        class st // Single threaded
-        {
-        public:
-            st()
-            {
-                ;
-            }
-
-            virtual ~st()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                ;
-            }
-
-            void unlock()
-            {
-                ;
-            }
-
-            void test(st const * p) const {}
-        };
-
-#ifdef _SIGSLOT_HAS_WIN32_THREADS
-        // The multi threading policies only get compiled in if they are enabled.
-        class mtg
-        {
-        public:
-            mtg()
-            {
-                static bool isinitialised = false;
-
-                if(!isinitialised)
-                {
-                    InitializeCriticalSection(get_critsec());
-                    isinitialised = true;
-                }
-            }
-
-            mtg(const mtg&)
-            {
-                ;
-            }
-
-            virtual ~mtg()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                EnterCriticalSection(get_critsec());
-            }
-
-            void unlock()
-            {
-                LeaveCriticalSection(get_critsec());
-            }
-
-            void test(mtg const * p) const {}
-        private:
-            CRITICAL_SECTION* get_critsec()
-            {
-                static CRITICAL_SECTION g_critsec;
-                return &g_critsec;
-            }
-        };
-
-        class mt
-        {
-        public:
-            mt()
-            {
-                InitializeCriticalSection(&m_critsec);
-            }
-
-            mt(const mt&)
-            {
-                InitializeCriticalSection(&m_critsec);
-            }
-
-            virtual ~mt()
-            {
-                DeleteCriticalSection(&m_critsec);
-            }
-
-            void lock()
-            {
-                EnterCriticalSection(&m_critsec);
-            }
-
-            void unlock()
-            {
-                LeaveCriticalSection(&m_critsec);
-            }
-
-            void test(mt const * p) const {}
-        private:
-            CRITICAL_SECTION m_critsec;
-        };
-#endif // _SIGSLOT_HAS_WIN32_THREADS
-
-#ifdef _SIGSLOT_HAS_POSIX_THREADS
-        // The multi threading policies only get compiled in if they are enabled.
-        class mtg
-        {
-        public:
-            mtg()
-            {
-                pthread_mutex_init(get_mutex(), NULL);
-            }
-
-            mtg(const mtg&)
-            {
-                ;
-            }
-
-            virtual ~mtg()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                pthread_mutex_lock(get_mutex());
-            }
-
-            void unlock()
-            {
-                pthread_mutex_unlock(get_mutex());
-            }
-
-            void test(mtg const * p) const {}
-        private:
-            pthread_mutex_t* get_mutex()
-            {
-                static pthread_mutex_t g_mutex;
-                return &g_mutex;
-            }
-        };
-
-        class mt
-        {
-        public:
-            mt()
-            {
-                pthread_mutex_init(&m_mutex, NULL);
-            }
-
-            mt(const mt&)
-            {
-                pthread_mutex_init(&m_mutex, NULL);
-            }
-
-            virtual ~mt()
-            {
-                pthread_mutex_destroy(&m_mutex);
-            }
-
-            void lock()
-            {
-                pthread_mutex_lock(&m_mutex);
-            }
-
-            void unlock()
-            {
-                pthread_mutex_unlock(&m_mutex);
-            }
-
-            void test(mt const * p) const {}
-        private:
-            pthread_mutex_t m_mutex;
-        };
-#endif // _SIGSLOT_HAS_POSIX_THREADS
-    }
-
-    template<class mt_policy>
     class has_slots;
 
     namespace internal {
-        template<class mt_policy>
-        class lock_block
-        {
-        public:
-            mt_policy *m_mutex;
 
-            lock_block(mt_policy *mtx)
-            : m_mutex(mtx)
-            {
-                m_mutex->lock();
-            }
-
-            ~lock_block()
-            {
-                m_mutex->unlock();
-            }
-        };
-
-        template<class mt_policy, class... args>
+        template<class... args>
         class _connection_base
         {
         public:
             bool one_shot = false;
             bool expired = false;
             virtual ~_connection_base() { }
-            virtual has_slots<mt_policy>* getdest() const = 0;
+            virtual has_slots* getdest() const = 0;
             virtual void emit(args...) = 0;
             virtual _connection_base* clone() = 0;
-            virtual _connection_base* duplicate(has_slots<mt_policy>* pnewdest) = 0;
+            virtual _connection_base* duplicate(has_slots* pnewdest) = 0;
         };
 
-        template<class mt_policy>
-        class _signal_base_lo : public mt_policy
+        class _signal_base_lo
         {
+        protected:
+            std::mutex m_barrier;
         public:
-            virtual void slot_disconnect(has_slots<mt_policy>* pslot) = 0;
-            virtual void slot_duplicate(const has_slots<mt_policy>* poldslot, has_slots<mt_policy>* pnewslot) = 0;
+            virtual void slot_disconnect(has_slots* pslot) = 0;
+            virtual void slot_duplicate(const has_slots* poldslot, has_slots* pnewslot) = 0;
         };
 
-        template<class mt_policy, class... args>
-        class _signal_base : public _signal_base_lo<mt_policy>
+        template<class... args>
+        class _signal_base : public _signal_base_lo
         {
         public:
-            typedef typename std::list<_connection_base<mt_policy, args...> *>  connections_list;
+            typedef typename std::list<_connection_base<args...> *>  connections_list;
 
-            _signal_base() : _signal_base_lo<mt_policy>(), m_connected_slots()
+            _signal_base() : _signal_base_lo(), m_connected_slots()
             {
                 ;
             }
 
             _signal_base(const _signal_base& s)
-                    : _signal_base_lo<mt_policy>(s), m_connected_slots()
+                    : _signal_base_lo(s), m_connected_slots()
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> m_barrier;
                 for (auto i : s.m_connected_slots) {
                     i->getdest()->signal_connect(this);
                     m_connected_slots.push_back(i->clone());
@@ -359,7 +141,7 @@ namespace sigslot {
 
             void disconnect_all()
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> m_barrier;
                 for (auto i : m_connected_slots) {
                     i->getdest()->signal_disconnect(this);
                     delete i;
@@ -367,11 +149,11 @@ namespace sigslot {
                 m_connected_slots.erase(m_connected_slots.begin(), m_connected_slots.end());
             }
 
-            void disconnect(has_slots<mt_policy>* pclass)
+            void disconnect(has_slots* pclass)
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> m_barrier;
                 bool found{false};
-                m_connected_slots.remove_if([pclass, &found](_connection_base<mt_policy, args...> * x) {
+                m_connected_slots.remove_if([pclass, &found](_connection_base<args...> * x) {
                     if (x->getdest() == pclass) {
                         delete x;
                         found = true;
@@ -382,21 +164,23 @@ namespace sigslot {
                 if (found) pclass->signal_disconnect(this);
             }
 
-            void slot_disconnect(has_slots<mt_policy>* pslot)
+            void slot_disconnect(has_slots* pslot)
             {
-                lock_block<mt_policy> lock(this);
-                m_connected_slots.remove_if([pslot](_connection_base<mt_policy, args...> * x) {
-                    if (x->getdest() == pslot) {
-                        delete x;
-                        return true;
+                std::lock_guard<std::mutex> m_barrier;
+                m_connected_slots.remove_if(
+                    [pslot](_connection_base<, args...> * x) {
+                        if (x->getdest() == pslot) {
+                            delete x;
+                            return true;
+                        }
+                        return false;
                     }
-                    return false;
-                });
+                );
             }
 
-            void slot_duplicate(const has_slots<mt_policy>* oldtarget, has_slots<mt_policy>* newtarget)
+            void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget)
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> m_barrier;
                 for (auto i : m_connected_slots) {
                     if(i->getdest() == oldtarget)
                     {
@@ -409,23 +193,23 @@ namespace sigslot {
             connections_list m_connected_slots;
         };
 
-        template<class dest_type, class mt_policy, class... args>
-        class _connection : public _connection_base<mt_policy, args...>
+        template<class dest_type, class... args>
+        class _connection : public _connection_base<args...>
         {
         public:
             _connection(dest_type *pobject, std::function<void(args... a)> fn, bool once)
-                    : m_pobject(pobject), m_fn(fn) { _connection_base<mt_policy, args...>::one_shot = once; }
+                    : m_pobject(pobject), m_fn(fn) { _connection_base<args...>::one_shot = once; }
             
-            virtual _connection_base<mt_policy, args...>* clone()
+            virtual _connection_base<args...>* clone()
             {
-                return new _connection<dest_type, mt_policy, args...>(m_pobject, m_fn,
-                                                                      _connection_base<mt_policy, args...>::one_shot);
+                return new _connection<dest_type, args...>(m_pobject, m_fn,
+                                                                      _connection_base<args...>::one_shot);
             }
 
-            virtual _connection_base<mt_policy, args...>* duplicate(has_slots<mt_policy>* pnewdest)
+            virtual _connection_base<args...>* duplicate(has_slots* pnewdest)
             {
-                return new _connection<dest_type, mt_policy, args...>((dest_type *) pnewdest, m_fn,
-                                                                      _connection_base<mt_policy, args...>::one_shot);
+                return new _connection<dest_type, args...>((dest_type *) pnewdest, m_fn,
+                                                                      _connection_base<args...>::one_shot);
             }
 
             virtual void emit(args... a)
@@ -433,7 +217,7 @@ namespace sigslot {
                 m_fn(a...);
             }
 
-            virtual has_slots<mt_policy>* getdest() const
+            virtual has_slots* getdest() const
             {
                 return m_pobject;
             }
@@ -443,22 +227,21 @@ namespace sigslot {
         };
     }
 
-    template<class  mt_policy = SIGSLOT_DEFAULT_MT_POLICY>
-    class has_slots : public mt_policy
+    class has_slots
     {
     private:
-        typedef typename std::set<internal::_signal_base_lo<mt_policy> *> sender_set;
+        typedef typename std::set<internal::_signal_base_lo *> sender_set;
 
     public:
-        has_slots() : mt_policy(), m_senders()
+        has_slots() : m_senders()
         {
             ;
         }
 
         has_slots(const has_slots& hs)
-                : mt_policy(hs), m_senders()
+                : m_senders()
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> m_barrier;
             for (auto i : hs.m_senders) {
                 i->slot_duplicate(&hs, this);
                 m_senders.insert(i);
@@ -467,15 +250,15 @@ namespace sigslot {
 
         has_slots(has_slots &&) = delete;
 
-        void signal_connect(internal::_signal_base_lo<mt_policy>* sender)
+        void signal_connect(internal::_signal_base_lo* sender)
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> m_barrier;
             m_senders.insert(sender);
         }
 
-        void signal_disconnect(internal::_signal_base_lo<mt_policy>* sender)
+        void signal_disconnect(internal::_signal_base_lo* sender)
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> m_barrier;
             m_senders.erase(sender);
         }
 
@@ -486,7 +269,7 @@ namespace sigslot {
 
         void disconnect_all()
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> m_barrier;
             for (auto i : m_senders) {
                 i->slot_disconnect(this);
             }
@@ -500,18 +283,18 @@ namespace sigslot {
 
 
 
-    template<typename mt_policy = SIGSLOT_DEFAULT_MT_POLICY, class... args>
-    class signal : public internal::_signal_base<mt_policy, args...>
+    template<class... args>
+    class signal : public internal::_signal_base<args...>
     {
     public:
-        typedef typename internal::_signal_base<mt_policy, args...>::connections_list::const_iterator const_iterator;
+        typedef typename internal::_signal_base<args...>::connections_list::const_iterator const_iterator;
         signal()
         {
             ;
         }
 
-        signal(const signal<mt_policy, args...>& s)
-        : internal::_signal_base<mt_policy, args...>(s)
+        signal(const signal<args...>& s)
+        : internal::_signal_base<args...>(s)
         {
             ;
         }
@@ -519,9 +302,8 @@ namespace sigslot {
         template<class desttype>
         void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
-            this->test(pclass); // Ensure it's the same mt_policy.
-            internal::lock_block<mt_policy> lock(this);
-            internal::_connection<desttype, mt_policy, args...> *conn = new internal::_connection<desttype, mt_policy, args...>(
+            std::lock_guard<std::mutex> m_barrier;
+            internal::_connection<desttype, args...> *conn = new internal::_connection<desttype, args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
@@ -537,7 +319,7 @@ namespace sigslot {
         // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> m_barrier;
             const_iterator itNext, it = this->m_connected_slots.begin();
             const_iterator itEnd = this->m_connected_slots.end();
 
@@ -554,7 +336,7 @@ namespace sigslot {
                 it = itNext;
             }
 
-            this->m_connected_slots.remove_if([this](internal::_connection_base<mt_policy, args...> *x) {
+            this->m_connected_slots.remove_if([this](internal::_connection_base<args...> *x) {
                 if (x->expired) {
                     x->getdest()->signal_disconnect(this);
                     delete x;

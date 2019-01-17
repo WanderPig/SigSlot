@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(sigslot)
+set (CMAKE_CXX_STANDARD_REQUIRED C++17)
+include_directories(.)
+add_executable(example test.cc sigslot/sigslot.h)
