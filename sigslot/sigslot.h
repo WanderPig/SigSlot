@@ -82,6 +82,10 @@
 #include <list>
 #include <functional>
 #include <mutex>
+#ifdef SIGSLOT_COROUTINES
+#include <optional>
+#include <experimental/coroutine>
+#endif
 
 namespace sigslot {
 
@@ -95,7 +99,7 @@ namespace sigslot {
             bool one_shot = false;
             bool expired = false;
 
-            virtual ~_connection_base() {}
+            virtual ~_connection_base() = default;
 
             virtual has_slots *getdest() const = 0;
 
@@ -226,7 +230,7 @@ namespace sigslot {
                 if (found) pclass->signal_disconnect(this);
             }
 
-            void slot_disconnect(has_slots* pslot)
+            void slot_disconnect(has_slots* pslot) final
             {
                 std::lock_guard<std::mutex> lock(m_barrier);
                 m_connected_slots.remove_if(
@@ -240,7 +244,7 @@ namespace sigslot {
                 );
             }
 
-            void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget)
+            void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget) final
             {
                 std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
@@ -290,6 +294,15 @@ namespace sigslot {
     }
 
 
+#ifdef SIGSLOT_COROUTINES
+    namespace coroutines {
+        template<class... args> struct awaitable;
+        // template<> struct awaitable<class T>;
+        template<> struct awaitable<>;
+    }
+#endif
+
+
     template<class... args>
     class signal : public internal::_signal_base<args...>
     {
@@ -310,7 +323,7 @@ namespace sigslot {
         void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
             std::lock_guard<std::mutex> lock(internal::_signal_base<args...>::m_barrier);
-            internal::_connection<desttype, args...> *conn = new internal::_connection<desttype, args...>(
+            auto *conn = new internal::_connection<desttype, args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
@@ -361,8 +374,102 @@ namespace sigslot {
         {
             this->emit(a...);
         }
+
+#ifdef SIGSLOT_COROUTINES
+        auto operator co_await() {
+            return coroutines::awaitable<args...>(*this);
+        }
+#endif
     };
 
+
+#ifdef SIGSLOT_COROUTINES
+    namespace coroutines {
+        // Generic variant uses a tuple to pass back.
+        template<class... args>
+        struct awaitable : public has_slots {
+            std::optional<std::experimental::coroutine_handle<>> awaiting;
+            std::optional<std::tuple<args...>> payload;
+            explicit awaitable(signal<args...> & s) : awaiting(), payload() {
+                s.connect(this, &awaitable<args...>::resolve);
+            }
+
+            bool await_ready() {
+                return payload.has_value();
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting = h;
+            }
+
+            auto await_resume() {
+                return *payload;
+            }
+
+            void resolve(args... a) {
+                payload.emplace(a...);
+                awaiting->resume();
+            }
+        };
+
+        // Single argument version uses a bare T
+        /* template<>
+        struct awaitable<T> : public has_slots {
+            std::optional<std::experimental::coroutine_handle<>> awaiting;
+            std::optional<T> payload;
+            explicit awaitable(signal<T> & s) {
+                s.connect(this, &awaitable<T>::resolve);
+            }
+
+            bool await_ready() {
+                return payload.has_value();
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting = h;
+            }
+
+            auto await_resume() {
+                return *payload;
+            }
+
+            void resolve(T a) {
+                payload.emplace(a);
+                awaiting->resume();
+            }
+        }; */
+
+        // Zero argument version uses nothing, of course.
+        template<>
+        struct awaitable<> : public has_slots {
+            std::optional<std::experimental::coroutine_handle<>> awaiting;
+            bool payload = false;
+            explicit awaitable(signal<> & s) : awaiting() {
+                s.connect(this, &awaitable<>::resolve);
+            }
+
+            bool await_ready() {
+                return payload;
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting = h;
+            }
+
+            void await_resume() {
+            }
+
+            void resolve() {
+                payload = true;
+                awaiting->resume();
+            }
+        };
+
+    }
+#endif
 } // namespace sigslot
 
 #endif // SIGSLOT_H__
