@@ -90,27 +90,89 @@ namespace sigslot {
     namespace internal {
 
         template<class... args>
-        class _connection_base
-        {
+        class _connection_base {
         public:
             bool one_shot = false;
             bool expired = false;
-            virtual ~_connection_base() { }
-            virtual has_slots* getdest() const = 0;
+
+            virtual ~_connection_base() {}
+
+            virtual has_slots *getdest() const = 0;
+
             virtual void emit(args...) = 0;
-            virtual _connection_base* clone() = 0;
-            virtual _connection_base* duplicate(has_slots* pnewdest) = 0;
+
+            virtual _connection_base *clone() = 0;
+
+            virtual _connection_base *duplicate(has_slots *pnewdest) = 0;
         };
 
-        class _signal_base_lo
-        {
+        class _signal_base_lo {
         protected:
             std::mutex m_barrier;
         public:
-            virtual void slot_disconnect(has_slots* pslot) = 0;
-            virtual void slot_duplicate(const has_slots* poldslot, has_slots* pnewslot) = 0;
-        };
+            virtual void slot_disconnect(has_slots *pslot) = 0;
 
+            virtual void slot_duplicate(const has_slots *poldslot, has_slots *pnewslot) = 0;
+        };
+    }
+
+
+    class has_slots
+    {
+    private:
+        std::mutex m_barrier;
+        typedef typename std::set<internal::_signal_base_lo *> sender_set;
+
+    public:
+        has_slots() : m_senders()
+        {
+            ;
+        }
+
+        has_slots(const has_slots& hs)
+                : m_senders()
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            for (auto i : hs.m_senders) {
+                i->slot_duplicate(&hs, this);
+                m_senders.insert(i);
+            }
+        }
+
+        has_slots(has_slots &&) = delete;
+
+        void signal_connect(internal::_signal_base_lo* sender)
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            m_senders.insert(sender);
+        }
+
+        void signal_disconnect(internal::_signal_base_lo* sender)
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            m_senders.erase(sender);
+        }
+
+        virtual ~has_slots()
+        {
+            disconnect_all();
+        }
+
+        void disconnect_all()
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            for (auto i : m_senders) {
+                i->slot_disconnect(this);
+            }
+
+            m_senders.erase(m_senders.begin(), m_senders.end());
+        }
+
+    private:
+        sender_set m_senders;
+    };
+
+    namespace internal {
         template<class... args>
         class _signal_base : public _signal_base_lo
         {
@@ -125,7 +187,7 @@ namespace sigslot {
             _signal_base(const _signal_base& s)
                     : _signal_base_lo(s), m_connected_slots()
             {
-                std::lock_guard<std::mutex> m_barrier;
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : s.m_connected_slots) {
                     i->getdest()->signal_connect(this);
                     m_connected_slots.push_back(i->clone());
@@ -141,7 +203,7 @@ namespace sigslot {
 
             void disconnect_all()
             {
-                std::lock_guard<std::mutex> m_barrier;
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     i->getdest()->signal_disconnect(this);
                     delete i;
@@ -151,7 +213,7 @@ namespace sigslot {
 
             void disconnect(has_slots* pclass)
             {
-                std::lock_guard<std::mutex> m_barrier;
+                std::lock_guard<std::mutex> lock(m_barrier);
                 bool found{false};
                 m_connected_slots.remove_if([pclass, &found](_connection_base<args...> * x) {
                     if (x->getdest() == pclass) {
@@ -166,9 +228,9 @@ namespace sigslot {
 
             void slot_disconnect(has_slots* pslot)
             {
-                std::lock_guard<std::mutex> m_barrier;
+                std::lock_guard<std::mutex> lock(m_barrier);
                 m_connected_slots.remove_if(
-                    [pslot](_connection_base<, args...> * x) {
+                    [pslot](_connection_base<args...> * x) {
                         if (x->getdest() == pslot) {
                             delete x;
                             return true;
@@ -180,7 +242,7 @@ namespace sigslot {
 
             void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget)
             {
-                std::lock_guard<std::mutex> m_barrier;
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     if(i->getdest() == oldtarget)
                     {
@@ -227,61 +289,6 @@ namespace sigslot {
         };
     }
 
-    class has_slots
-    {
-    private:
-        typedef typename std::set<internal::_signal_base_lo *> sender_set;
-
-    public:
-        has_slots() : m_senders()
-        {
-            ;
-        }
-
-        has_slots(const has_slots& hs)
-                : m_senders()
-        {
-            std::lock_guard<std::mutex> m_barrier;
-            for (auto i : hs.m_senders) {
-                i->slot_duplicate(&hs, this);
-                m_senders.insert(i);
-            }
-        }
-
-        has_slots(has_slots &&) = delete;
-
-        void signal_connect(internal::_signal_base_lo* sender)
-        {
-            std::lock_guard<std::mutex> m_barrier;
-            m_senders.insert(sender);
-        }
-
-        void signal_disconnect(internal::_signal_base_lo* sender)
-        {
-            std::lock_guard<std::mutex> m_barrier;
-            m_senders.erase(sender);
-        }
-
-        virtual ~has_slots()
-        {
-            disconnect_all();
-        }
-
-        void disconnect_all()
-        {
-            std::lock_guard<std::mutex> m_barrier;
-            for (auto i : m_senders) {
-                i->slot_disconnect(this);
-            }
-
-            m_senders.erase(m_senders.begin(), m_senders.end());
-        }
-
-    private:
-        sender_set m_senders;
-    };
-
-
 
     template<class... args>
     class signal : public internal::_signal_base<args...>
@@ -302,7 +309,7 @@ namespace sigslot {
         template<class desttype>
         void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
-            std::lock_guard<std::mutex> m_barrier;
+            std::lock_guard<std::mutex> lock(internal::_signal_base<args...>::m_barrier);
             internal::_connection<desttype, args...> *conn = new internal::_connection<desttype, args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
@@ -319,7 +326,7 @@ namespace sigslot {
         // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
-            std::lock_guard<std::mutex> m_barrier;
+            std::lock_guard<std::mutex> lock(internal::_signal_base<args...>::m_barrier);
             const_iterator itNext, it = this->m_connected_slots.begin();
             const_iterator itEnd = this->m_connected_slots.end();
 

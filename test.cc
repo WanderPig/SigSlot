@@ -10,8 +10,8 @@ public:
 	 * The template args are a multithreading policy, followed by
 	 * zero or more payload arguments.
 	 */
-	mutable sigslot::signal<sigslot::thread::mt> signal_zero;
-	mutable sigslot::signal<sigslot::thread::mt, bool> signal_bool;
+	mutable sigslot::signal<> signal_zero;
+	mutable sigslot::signal<bool> signal_bool;
 	
 	Source() = default;
 	Source(Source &) = delete;
@@ -33,7 +33,7 @@ public:
 		 */
 		signal_zero();
 	}
-	typedef sigslot::signal<sigslot::thread::mt, Source &, std::string const &, bool> domain_callback_t;
+	typedef sigslot::signal<Source &, std::string const &, bool> domain_callback_t;
 	domain_callback_t & callback(std::string const & domain) {
 		/*
 		 * Sometimes, you might want to have a callback that's
@@ -64,7 +64,7 @@ private:
  * A sink "owns" the signal connections; when it goes out of scope
  * they'll be disconnected.
  */
-class Sink : public sigslot::has_slots<> {
+class Sink : public sigslot::has_slots {
 public:
 	Sink() = default;
 	
