@@ -85,6 +85,7 @@
 #ifdef SIGSLOT_COROUTINES
 #include <optional>
 #include <experimental/coroutine>
+#include <vector>
 #endif
 
 namespace sigslot {
@@ -308,6 +309,9 @@ namespace sigslot {
     {
     public:
         typedef typename internal::_signal_base<args...>::connections_list::const_iterator const_iterator;
+#ifdef SIGSLOT_COROUTINES
+        std::unique_ptr<coroutines::awaitable<args...>> m_awaitable;
+#endif
         signal()
         {
             ;
@@ -355,6 +359,13 @@ namespace sigslot {
 
                 it = itNext;
             }
+#ifdef SIGSLOT_COROUTINES
+            if (m_awaitable) {
+                std::unique_ptr<coroutines::awaitable<args...>> awaitable(std::move(m_awaitable));
+                m_awaitable.reset();
+                awaitable->resolve(a...);
+            }
+#endif
 
             this->m_connected_slots.remove_if([this](internal::_connection_base<args...> *x) {
                 if (x->expired) {
@@ -376,8 +387,11 @@ namespace sigslot {
         }
 
 #ifdef SIGSLOT_COROUTINES
-        auto operator co_await() {
-            return coroutines::awaitable<args...>(*this);
+        auto & operator co_await() {
+            if (!m_awaitable) {
+                m_awaitable = std::make_unique<coroutines::awaitable<args...>>();
+            }
+            return *m_awaitable;
         }
 #endif
     };
@@ -388,19 +402,21 @@ namespace sigslot {
         // Generic variant uses a tuple to pass back.
         template<class... args>
         struct awaitable : public has_slots {
-            std::optional<std::experimental::coroutine_handle<>> awaiting;
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
             std::optional<std::tuple<args...>> payload;
-            explicit awaitable(signal<args...> & s) : awaiting(), payload() {
-                s.connect(this, &awaitable<args...>::resolve);
+
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) : awaiting(other.awaiting), payload(other.payload) {
             }
 
             bool await_ready() {
-                return payload.has_value();
+                return false;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting = h;
+                awaiting.push_back(h);
             }
 
             auto await_resume() {
@@ -409,7 +425,7 @@ namespace sigslot {
 
             void resolve(args... a) {
                 payload.emplace(a...);
-                awaiting->resume();
+                for (auto & awaiter : awaiting) awaiter.resume();
             }
         };
 
@@ -444,27 +460,30 @@ namespace sigslot {
         // Zero argument version uses nothing, of course.
         template<>
         struct awaitable<> : public has_slots {
-            std::optional<std::experimental::coroutine_handle<>> awaiting;
-            bool payload = false;
-            explicit awaitable(signal<> & s) : awaiting() {
-                s.connect(this, &awaitable<>::resolve);
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) : awaiting(other.awaiting) {
             }
 
             bool await_ready() {
-                return payload;
+                return false;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting = h;
+                awaiting.push_back(h);
             }
 
-            void await_resume() {
+            bool await_resume() {
+                return true;
             }
 
             void resolve() {
-                payload = true;
-                awaiting->resume();
+                for (auto & awaiter : awaiting ) awaiter.resume();
+            }
+
+            ~awaitable() {
             }
         };
 
