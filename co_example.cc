@@ -62,10 +62,11 @@ struct tasklet {
 #include <iostream>
 
 /**
- * We'll use a pair of global signals here.
+ * We'll use some global signals here.
  */
 sigslot::signal<> tick;
 sigslot::signal<int> tock;
+sigslot::signal<int, std::string> splat;
 
 /**
  * Our simple coroutine.
@@ -75,7 +76,10 @@ sigslot::signal<int> tock;
 
 tasklet<int> coroutine_example() {
     std::cout << "C: Ready." << std::endl;
-    co_await tick; // It'll now suspend, and return control to the caller.
+    /**
+     * If you co_await a signal, execution stops and control moves to the caller.
+     */
+    co_await tick;
     /**
      * And now the signal must have been triggered.
      *
@@ -83,9 +87,21 @@ tasklet<int> coroutine_example() {
      * we won't know about it.
      */
     std::cout << "C: Got a tick." << std::endl;
-    int foo;
-    std::tie(foo) = co_await tock; // You can also get the value passed to the signal.
+    /**
+     * For signals with a single argument, the argument gets returned by the
+     * co_await when it completes:
+     */
+    int foo = co_await tock;
     std::cout << "C: Got a tock of " << foo << std::endl;
+    /**
+     * Signals that have multiple arguments also work, but it passes back a std::tuple
+     * in this case. This is relatively easy to unwrap with a std::tie, though it would
+     * be simpler with C++17's Structured Bindings.
+     */
+    int x;
+    std::string s;
+    std::tie(x, s) = co_await splat;
+    std::cout << "C: Got a splat of " << x << ", " << s << std::endl;
     co_return foo;
 }
 
@@ -98,11 +114,13 @@ int main(int argc, char *argv[]) {
         auto c = coroutine_example(); // Start the coroutine. It'll execute until it needs to await a signal, then stop and return.
         std:: cout << "M: Tick:" << std::endl;
         tick(); // When we emit the signal, it'll start executing the coroutine again. Again, it'll stop when it awaits the next signal.
-        std::cout << "M: Tock:" << std::endl;
+        std::cout << "M: Tock(42):" << std::endl;
         tock(42);
+        std::cout << "M: Splat(17, \"Gerbils\")" << std::endl;
+        splat(17, "Gerbils");
         std::cout << "M: Answer is " << c.get() << std::endl;
         /**
-         * If we sent the second signal after the first, the coroutine would wait forever.
+         * If we sent the second signal before the first, the coroutine would wait forever.
          * This is because it wouldn't fire when the coroutine is suspended in co_await.
          */
     } catch (std::exception const & e) {

@@ -1,6 +1,7 @@
 // sigslot.h: Signal/Slot classes
 //
 // Written by Sarah Thompson (sarah@telergy.com) 2002.
+// Mangled by Dave Cridland <dave@cridland.net>, most recently in 2019.
 //
 // License: Public domain. You are free to use this code however you like, with the proviso that
 //          the author takes on no responsibility or liability for any use.
@@ -10,64 +11,18 @@
 //              (see also the full documentation at http://sigslot.sourceforge.net/)
 //
 //      #define switches
-//          SIGSLOT_PURE_ISO            - Define this to force ISO C++ compliance. This also disables
-//                                        all of the thread safety support on platforms where it is
-//                                        available.
-//
-//          SIGSLOT_USE_POSIX_THREADS   - Force use of Posix threads when using a C++ compiler other than
-//                                        gcc on a platform that supports Posix threads. (When using gcc,
-//                                        this is the default - use SIGSLOT_PURE_ISO to disable this if
-//                                        necessary)
-//
-//          SIGSLOT_DEFAULT_MT_POLICY   - Where thread support is enabled, this defaults to multi_threaded_global.
-//                                        Otherwise, the default is single_threaded. #define this yourself to
-//                                        override the default. In pure ISO mode, anything other than
-//                                        single_threaded will cause a compiler error.
+//          SIGSLOT_COROUTINES:
+//          If defined, this will provide an operator co_await(), so that coroutines can
+//          co_await on a signal instead of registering a callback.
 //
 //      PLATFORM NOTES
 //
-//          Win32                       - On Win32, the WIN32 symbol must be #defined. Most mainstream
-//                                        compilers do this by default, but you may need to define it
-//                                        yourself if your build environment is less standard. This causes
-//                                        the Win32 thread support to be compiled in and used automatically.
-//
-//          Unix/Linux/BSD, etc.        - If you're using gcc, it is assumed that you have Posix threads
-//                                        available, so they are used automatically. You can override this
-//                                        (as under Windows) with the SIGSLOT_PURE_ISO switch. If you're using
-//                                        something other than gcc but still want to use Posix threads, you
-//                                        need to #define SIGSLOT_USE_POSIX_THREADS.
-//
-//          ISO C++                     - If none of the supported platforms are detected, or if
-//                                        SIGSLOT_PURE_ISO is defined, all multithreading support is turned off,
-//                                        along with any code that might cause a pure ISO C++ environment to
-//                                        complain. Before you ask, gcc -ansi -pedantic won't compile this
-//                                        library, but gcc -ansi is fine. Pedantic mode seems to throw a lot of
-//                                        errors that aren't really there. If you feel like investigating this,
-//                                        please contact the author.
-//
+//      The header file requires C++11 (certainly), C++14 (probably), and C++17 (maybe).
+//      Coroutine support isn't well-tested, and might only work on CLang for now.
 //
 //      THREADING MODES
 //
-//          single_threaded             - Your program is assumed to be single threaded from the point of view
-//                                        of signal/slot usage (i.e. all objects using signals and slots are
-//                                        created and destroyed from a single thread). Behaviour if objects are
-//                                        destroyed concurrently is undefined (i.e. you'll get the occasional
-//                                        segmentation fault/memory exception).
-//
-//          multi_threaded_global       - Your program is assumed to be multi threaded. Objects using signals and
-//                                        slots can be safely created and destroyed from any thread, even when
-//                                        connections exist. In multi_threaded_global mode, this is achieved by a
-//                                        single global mutex (actually a critical section on Windows because they
-//                                        are faster). This option uses less OS resources, but results in more
-//                                        opportunities for contention, possibly resulting in more context switches
-//                                        than are strictly necessary.
-//
-//          multi_threaded_local        - Behaviour in this mode is essentially the same as multi_threaded_global,
-//                                        except that each signal, and each object that inherits has_slots, all
-//                                        have their own mutex/critical section. In practice, this means that
-//                                        mutex collisions (and hence context switches) only happen if they are
-//                                        absolutely essential. However, on some platforms, creating a lot of
-//                                        mutexes can slow down the whole OS, so use this option with care.
+//       Only C++11 threading remains.
 //
 //      USING THE LIBRARY
 //
@@ -93,24 +48,6 @@ namespace sigslot {
     class has_slots;
 
     namespace internal {
-
-        template<class... args>
-        class _connection_base {
-        public:
-            bool one_shot = false;
-            bool expired = false;
-
-            virtual ~_connection_base() = default;
-
-            virtual has_slots *getdest() const = 0;
-
-            virtual void emit(args...) = 0;
-
-            virtual _connection_base *clone() = 0;
-
-            virtual _connection_base *duplicate(has_slots *pnewdest) = 0;
-        };
-
         class _signal_base_lo {
         protected:
             std::mutex m_barrier;
@@ -179,10 +116,44 @@ namespace sigslot {
 
     namespace internal {
         template<class... args>
+        class _connection
+        {
+        public:
+            _connection(has_slots *pobject, std::function<void(args... a)> fn, bool once)
+                    : m_pobject(pobject), m_fn(fn), one_shot(once) {}
+
+            _connection<args...>* clone()
+            {
+                return new _connection<args...>(m_pobject, m_fn, one_shot);
+            }
+
+            _connection<args...>* duplicate(has_slots* pnewdest)
+            {
+                return new _connection<args...>(pnewdest, m_fn, one_shot);
+            }
+
+            void emit(args... a)
+            {
+                m_fn(a...);
+            }
+
+            has_slots* getdest() const
+            {
+                return m_pobject;
+            }
+
+            const bool one_shot = false;
+            bool expired = false;
+        private:
+            has_slots* m_pobject;
+            std::function<void(args...)> m_fn;
+        };
+
+        template<class... args>
         class _signal_base : public _signal_base_lo
         {
         public:
-            typedef typename std::list<_connection_base<args...> *>  connections_list;
+            typedef typename std::list<_connection<args...> *>  connections_list;
 
             _signal_base() : _signal_base_lo(), m_connected_slots()
             {
@@ -220,7 +191,7 @@ namespace sigslot {
             {
                 std::lock_guard<std::mutex> lock(m_barrier);
                 bool found{false};
-                m_connected_slots.remove_if([pclass, &found](_connection_base<args...> * x) {
+                m_connected_slots.remove_if([pclass, &found](_connection<args...> * x) {
                     if (x->getdest() == pclass) {
                         delete x;
                         found = true;
@@ -235,7 +206,7 @@ namespace sigslot {
             {
                 std::lock_guard<std::mutex> lock(m_barrier);
                 m_connected_slots.remove_if(
-                    [pslot](_connection_base<args...> * x) {
+                    [pslot](_connection<args...> * x) {
                         if (x->getdest() == pslot) {
                             delete x;
                             return true;
@@ -260,38 +231,6 @@ namespace sigslot {
             connections_list m_connected_slots;
         };
 
-        template<class dest_type, class... args>
-        class _connection : public _connection_base<args...>
-        {
-        public:
-            _connection(dest_type *pobject, std::function<void(args... a)> fn, bool once)
-                    : m_pobject(pobject), m_fn(fn) { _connection_base<args...>::one_shot = once; }
-            
-            virtual _connection_base<args...>* clone()
-            {
-                return new _connection<dest_type, args...>(m_pobject, m_fn,
-                                                                      _connection_base<args...>::one_shot);
-            }
-
-            virtual _connection_base<args...>* duplicate(has_slots* pnewdest)
-            {
-                return new _connection<dest_type, args...>((dest_type *) pnewdest, m_fn,
-                                                                      _connection_base<args...>::one_shot);
-            }
-
-            virtual void emit(args... a)
-            {
-                m_fn(a...);
-            }
-
-            virtual has_slots* getdest() const
-            {
-                return m_pobject;
-            }
-        private:
-            dest_type* m_pobject;
-            std::function<void(args...)> m_fn;
-        };
     }
 
 
@@ -323,11 +262,10 @@ namespace sigslot {
             ;
         }
 
-        template<class desttype>
-        void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
+        void connect(has_slots *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
-            std::lock_guard<std::mutex> lock(internal::_signal_base<args...>::m_barrier);
-            auto *conn = new internal::_connection<desttype, args...>(
+            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
+            auto *conn = new internal::_connection<args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
@@ -343,7 +281,7 @@ namespace sigslot {
         // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
-            std::lock_guard<std::mutex> lock(internal::_signal_base<args...>::m_barrier);
+            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
             const_iterator itNext, it = this->m_connected_slots.begin();
             const_iterator itEnd = this->m_connected_slots.end();
 
@@ -367,7 +305,7 @@ namespace sigslot {
             }
 #endif
 
-            this->m_connected_slots.remove_if([this](internal::_connection_base<args...> *x) {
+            this->m_connected_slots.remove_if([this](internal::_connection<args...> *x) {
                 if (x->expired) {
                     x->getdest()->signal_disconnect(this);
                     delete x;
@@ -401,14 +339,13 @@ namespace sigslot {
     namespace coroutines {
         // Generic variant uses a tuple to pass back.
         template<class... args>
-        struct awaitable : public has_slots {
+        struct awaitable {
             std::vector<std::experimental::coroutine_handle<>> awaiting;
             std::optional<std::tuple<args...>> payload;
 
             awaitable() = default;
             awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) : awaiting(other.awaiting), payload(other.payload) {
-            }
+            awaitable(awaitable && other) = delete;
 
             bool await_ready() {
                 return false;
@@ -430,21 +367,21 @@ namespace sigslot {
         };
 
         // Single argument version uses a bare T
-        /* template<>
+        template<typename T>
         struct awaitable<T> : public has_slots {
-            std::optional<std::experimental::coroutine_handle<>> awaiting;
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
             std::optional<T> payload;
-            explicit awaitable(signal<T> & s) {
-                s.connect(this, &awaitable<T>::resolve);
-            }
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) = delete;
 
             bool await_ready() {
-                return payload.has_value();
+                return false;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting = h;
+                awaiting.push_back(h);
             }
 
             auto await_resume() {
@@ -453,18 +390,17 @@ namespace sigslot {
 
             void resolve(T a) {
                 payload.emplace(a);
-                awaiting->resume();
+                for (auto & awaiter : awaiting) awaiter.resume();
             }
-        }; */
+        };
 
         // Zero argument version uses nothing, of course.
         template<>
-        struct awaitable<> : public has_slots {
+        struct awaitable<> {
             std::vector<std::experimental::coroutine_handle<>> awaiting;
             awaitable() = default;
             awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) : awaiting(other.awaiting) {
-            }
+            awaitable(awaitable && other) = delete;
 
             bool await_ready() {
                 return false;
@@ -481,9 +417,6 @@ namespace sigslot {
 
             void resolve() {
                 for (auto & awaiter : awaiting ) awaiter.resume();
-            }
-
-            ~awaitable() {
             }
         };
 
