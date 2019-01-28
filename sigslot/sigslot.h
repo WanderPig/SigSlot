@@ -1,6 +1,7 @@
 // sigslot.h: Signal/Slot classes
 //
 // Written by Sarah Thompson (sarah@telergy.com) 2002.
+// Mangled by Dave Cridland <dave@cridland.net>, most recently in 2019.
 //
 // License: Public domain. You are free to use this code however you like, with the proviso that
 //          the author takes on no responsibility or liability for any use.
@@ -10,64 +11,18 @@
 //              (see also the full documentation at http://sigslot.sourceforge.net/)
 //
 //      #define switches
-//          SIGSLOT_PURE_ISO            - Define this to force ISO C++ compliance. This also disables
-//                                        all of the thread safety support on platforms where it is
-//                                        available.
-//
-//          SIGSLOT_USE_POSIX_THREADS   - Force use of Posix threads when using a C++ compiler other than
-//                                        gcc on a platform that supports Posix threads. (When using gcc,
-//                                        this is the default - use SIGSLOT_PURE_ISO to disable this if
-//                                        necessary)
-//
-//          SIGSLOT_DEFAULT_MT_POLICY   - Where thread support is enabled, this defaults to multi_threaded_global.
-//                                        Otherwise, the default is single_threaded. #define this yourself to
-//                                        override the default. In pure ISO mode, anything other than
-//                                        single_threaded will cause a compiler error.
+//          SIGSLOT_COROUTINES:
+//          If defined, this will provide an operator co_await(), so that coroutines can
+//          co_await on a signal instead of registering a callback.
 //
 //      PLATFORM NOTES
 //
-//          Win32                       - On Win32, the WIN32 symbol must be #defined. Most mainstream
-//                                        compilers do this by default, but you may need to define it
-//                                        yourself if your build environment is less standard. This causes
-//                                        the Win32 thread support to be compiled in and used automatically.
-//
-//          Unix/Linux/BSD, etc.        - If you're using gcc, it is assumed that you have Posix threads
-//                                        available, so they are used automatically. You can override this
-//                                        (as under Windows) with the SIGSLOT_PURE_ISO switch. If you're using
-//                                        something other than gcc but still want to use Posix threads, you
-//                                        need to #define SIGSLOT_USE_POSIX_THREADS.
-//
-//          ISO C++                     - If none of the supported platforms are detected, or if
-//                                        SIGSLOT_PURE_ISO is defined, all multithreading support is turned off,
-//                                        along with any code that might cause a pure ISO C++ environment to
-//                                        complain. Before you ask, gcc -ansi -pedantic won't compile this
-//                                        library, but gcc -ansi is fine. Pedantic mode seems to throw a lot of
-//                                        errors that aren't really there. If you feel like investigating this,
-//                                        please contact the author.
-//
+//      The header file requires C++11 (certainly), C++14 (probably), and C++17 (maybe).
+//      Coroutine support isn't well-tested, and might only work on CLang for now.
 //
 //      THREADING MODES
 //
-//          single_threaded             - Your program is assumed to be single threaded from the point of view
-//                                        of signal/slot usage (i.e. all objects using signals and slots are
-//                                        created and destroyed from a single thread). Behaviour if objects are
-//                                        destroyed concurrently is undefined (i.e. you'll get the occasional
-//                                        segmentation fault/memory exception).
-//
-//          multi_threaded_global       - Your program is assumed to be multi threaded. Objects using signals and
-//                                        slots can be safely created and destroyed from any thread, even when
-//                                        connections exist. In multi_threaded_global mode, this is achieved by a
-//                                        single global mutex (actually a critical section on Windows because they
-//                                        are faster). This option uses less OS resources, but results in more
-//                                        opportunities for contention, possibly resulting in more context switches
-//                                        than are strictly necessary.
-//
-//          multi_threaded_local        - Behaviour in this mode is essentially the same as multi_threaded_global,
-//                                        except that each signal, and each object that inherits has_slots, all
-//                                        have their own mutex/critical section. In practice, this means that
-//                                        mutex collisions (and hence context switches) only happen if they are
-//                                        absolutely essential. However, on some platforms, creating a lot of
-//                                        mutexes can slow down the whole OS, so use this option with care.
+//       Only C++11 threading remains.
 //
 //      USING THE LIBRARY
 //
@@ -81,269 +36,134 @@
 #include <set>
 #include <list>
 #include <functional>
-
-#if defined(SIGSLOT_PURE_ISO) || (!defined(WIN32) && !defined(__GNUG__) && !defined(SIGSLOT_USE_POSIX_THREADS))
-#   define _SIGSLOT_SINGLE_THREADED
-#elif defined(WIN32)
-#   define _SIGSLOT_HAS_WIN32_THREADS
-#   include <windows.h>
-#elif defined(__GNUG__) || defined(SIGSLOT_USE_POSIX_THREADS)
-#   define _SIGSLOT_HAS_POSIX_THREADS
-#   include <pthread.h>
-#else
-#   define _SIGSLOT_SINGLE_THREADED
+#include <mutex>
+#ifdef SIGSLOT_COROUTINES
+#include <optional>
+#include <experimental/coroutine>
+#include <vector>
 #endif
-
-#ifndef SIGSLOT_DEFAULT_MT_POLICY
-#   ifdef _SIGSLOT_SINGLE_THREADED
-#       define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::st
-#   else
-#       define SIGSLOT_DEFAULT_MT_POLICY ::sigslot::thread::mt
-#   endif
-#endif
-
 
 namespace sigslot {
 
-    namespace thread {
-
-        class st // Single threaded
-        {
-        public:
-            st()
-            {
-                ;
-            }
-
-            virtual ~st()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                ;
-            }
-
-            void unlock()
-            {
-                ;
-            }
-
-            void test(st const * p) const {}
-        };
-
-#ifdef _SIGSLOT_HAS_WIN32_THREADS
-        // The multi threading policies only get compiled in if they are enabled.
-        class mtg
-        {
-        public:
-            mtg()
-            {
-                static bool isinitialised = false;
-
-                if(!isinitialised)
-                {
-                    InitializeCriticalSection(get_critsec());
-                    isinitialised = true;
-                }
-            }
-
-            mtg(const mtg&)
-            {
-                ;
-            }
-
-            virtual ~mtg()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                EnterCriticalSection(get_critsec());
-            }
-
-            void unlock()
-            {
-                LeaveCriticalSection(get_critsec());
-            }
-
-            void test(mtg const * p) const {}
-        private:
-            CRITICAL_SECTION* get_critsec()
-            {
-                static CRITICAL_SECTION g_critsec;
-                return &g_critsec;
-            }
-        };
-
-        class mt
-        {
-        public:
-            mt()
-            {
-                InitializeCriticalSection(&m_critsec);
-            }
-
-            mt(const mt&)
-            {
-                InitializeCriticalSection(&m_critsec);
-            }
-
-            virtual ~mt()
-            {
-                DeleteCriticalSection(&m_critsec);
-            }
-
-            void lock()
-            {
-                EnterCriticalSection(&m_critsec);
-            }
-
-            void unlock()
-            {
-                LeaveCriticalSection(&m_critsec);
-            }
-
-            void test(mt const * p) const {}
-        private:
-            CRITICAL_SECTION m_critsec;
-        };
-#endif // _SIGSLOT_HAS_WIN32_THREADS
-
-#ifdef _SIGSLOT_HAS_POSIX_THREADS
-        // The multi threading policies only get compiled in if they are enabled.
-        class mtg
-        {
-        public:
-            mtg()
-            {
-                pthread_mutex_init(get_mutex(), NULL);
-            }
-
-            mtg(const mtg&)
-            {
-                ;
-            }
-
-            virtual ~mtg()
-            {
-                ;
-            }
-
-            void lock()
-            {
-                pthread_mutex_lock(get_mutex());
-            }
-
-            void unlock()
-            {
-                pthread_mutex_unlock(get_mutex());
-            }
-
-            void test(mtg const * p) const {}
-        private:
-            pthread_mutex_t* get_mutex()
-            {
-                static pthread_mutex_t g_mutex;
-                return &g_mutex;
-            }
-        };
-
-        class mt
-        {
-        public:
-            mt()
-            {
-                pthread_mutex_init(&m_mutex, NULL);
-            }
-
-            mt(const mt&)
-            {
-                pthread_mutex_init(&m_mutex, NULL);
-            }
-
-            virtual ~mt()
-            {
-                pthread_mutex_destroy(&m_mutex);
-            }
-
-            void lock()
-            {
-                pthread_mutex_lock(&m_mutex);
-            }
-
-            void unlock()
-            {
-                pthread_mutex_unlock(&m_mutex);
-            }
-
-            void test(mt const * p) const {}
-        private:
-            pthread_mutex_t m_mutex;
-        };
-#endif // _SIGSLOT_HAS_POSIX_THREADS
-    }
-
-    template<class mt_policy>
     class has_slots;
 
     namespace internal {
-        template<class mt_policy>
-        class lock_block
-        {
+        class _signal_base_lo {
+        protected:
+            std::mutex m_barrier;
         public:
-            mt_policy *m_mutex;
+            virtual void slot_disconnect(has_slots *pslot) = 0;
 
-            lock_block(mt_policy *mtx)
-            : m_mutex(mtx)
-            {
-                m_mutex->lock();
-            }
-
-            ~lock_block()
-            {
-                m_mutex->unlock();
-            }
+            virtual void slot_duplicate(const has_slots *poldslot, has_slots *pnewslot) = 0;
         };
+    }
 
-        template<class mt_policy, class... args>
-        class _connection_base
+
+    class has_slots
+    {
+    private:
+        std::mutex m_barrier;
+        typedef typename std::set<internal::_signal_base_lo *> sender_set;
+
+    public:
+        has_slots() : m_senders()
+        {
+            ;
+        }
+
+        has_slots(const has_slots& hs)
+                : m_senders()
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            for (auto i : hs.m_senders) {
+                i->slot_duplicate(&hs, this);
+                m_senders.insert(i);
+            }
+        }
+
+        has_slots(has_slots &&) = delete;
+
+        void signal_connect(internal::_signal_base_lo* sender)
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            m_senders.insert(sender);
+        }
+
+        void signal_disconnect(internal::_signal_base_lo* sender)
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            m_senders.erase(sender);
+        }
+
+        virtual ~has_slots()
+        {
+            disconnect_all();
+        }
+
+        void disconnect_all()
+        {
+            std::lock_guard<std::mutex> lock(m_barrier);
+            for (auto i : m_senders) {
+                i->slot_disconnect(this);
+            }
+
+            m_senders.erase(m_senders.begin(), m_senders.end());
+        }
+
+    private:
+        sender_set m_senders;
+    };
+
+    namespace internal {
+        template<class... args>
+        class _connection
         {
         public:
-            bool one_shot = false;
+            _connection(has_slots *pobject, std::function<void(args... a)> fn, bool once)
+                    : m_pobject(pobject), m_fn(fn), one_shot(once) {}
+
+            _connection<args...>* clone()
+            {
+                return new _connection<args...>(m_pobject, m_fn, one_shot);
+            }
+
+            _connection<args...>* duplicate(has_slots* pnewdest)
+            {
+                return new _connection<args...>(pnewdest, m_fn, one_shot);
+            }
+
+            void emit(args... a)
+            {
+                m_fn(a...);
+            }
+
+            has_slots* getdest() const
+            {
+                return m_pobject;
+            }
+
+            const bool one_shot = false;
             bool expired = false;
-            virtual ~_connection_base() { }
-            virtual has_slots<mt_policy>* getdest() const = 0;
-            virtual void emit(args...) = 0;
-            virtual _connection_base* clone() = 0;
-            virtual _connection_base* duplicate(has_slots<mt_policy>* pnewdest) = 0;
+        private:
+            has_slots* m_pobject;
+            std::function<void(args...)> m_fn;
         };
 
-        template<class mt_policy>
-        class _signal_base_lo : public mt_policy
+        template<class... args>
+        class _signal_base : public _signal_base_lo
         {
         public:
-            virtual void slot_disconnect(has_slots<mt_policy>* pslot) = 0;
-            virtual void slot_duplicate(const has_slots<mt_policy>* poldslot, has_slots<mt_policy>* pnewslot) = 0;
-        };
+            typedef typename std::list<_connection<args...> *>  connections_list;
 
-        template<class mt_policy, class... args>
-        class _signal_base : public _signal_base_lo<mt_policy>
-        {
-        public:
-            typedef typename std::list<_connection_base<mt_policy, args...> *>  connections_list;
-
-            _signal_base() : _signal_base_lo<mt_policy>(), m_connected_slots()
+            _signal_base() : _signal_base_lo(), m_connected_slots()
             {
                 ;
             }
 
             _signal_base(const _signal_base& s)
-                    : _signal_base_lo<mt_policy>(s), m_connected_slots()
+                    : _signal_base_lo(s), m_connected_slots()
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : s.m_connected_slots) {
                     i->getdest()->signal_connect(this);
                     m_connected_slots.push_back(i->clone());
@@ -359,7 +179,7 @@ namespace sigslot {
 
             void disconnect_all()
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     i->getdest()->signal_disconnect(this);
                     delete i;
@@ -367,11 +187,11 @@ namespace sigslot {
                 m_connected_slots.erase(m_connected_slots.begin(), m_connected_slots.end());
             }
 
-            void disconnect(has_slots<mt_policy>* pclass)
+            void disconnect(has_slots* pclass)
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> lock(m_barrier);
                 bool found{false};
-                m_connected_slots.remove_if([pclass, &found](_connection_base<mt_policy, args...> * x) {
+                m_connected_slots.remove_if([pclass, &found](_connection<args...> * x) {
                     if (x->getdest() == pclass) {
                         delete x;
                         found = true;
@@ -382,21 +202,23 @@ namespace sigslot {
                 if (found) pclass->signal_disconnect(this);
             }
 
-            void slot_disconnect(has_slots<mt_policy>* pslot)
+            void slot_disconnect(has_slots* pslot) final
             {
-                lock_block<mt_policy> lock(this);
-                m_connected_slots.remove_if([pslot](_connection_base<mt_policy, args...> * x) {
-                    if (x->getdest() == pslot) {
-                        delete x;
-                        return true;
+                std::lock_guard<std::mutex> lock(m_barrier);
+                m_connected_slots.remove_if(
+                    [pslot](_connection<args...> * x) {
+                        if (x->getdest() == pslot) {
+                            delete x;
+                            return true;
+                        }
+                        return false;
                     }
-                    return false;
-                });
+                );
             }
 
-            void slot_duplicate(const has_slots<mt_policy>* oldtarget, has_slots<mt_policy>* newtarget)
+            void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget) final
             {
-                lock_block<mt_policy> lock(this);
+                std::lock_guard<std::mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     if(i->getdest() == oldtarget)
                     {
@@ -409,119 +231,41 @@ namespace sigslot {
             connections_list m_connected_slots;
         };
 
-        template<class dest_type, class mt_policy, class... args>
-        class _connection : public _connection_base<mt_policy, args...>
-        {
-        public:
-            _connection(dest_type *pobject, std::function<void(args... a)> fn, bool once)
-                    : m_pobject(pobject), m_fn(fn) { _connection_base<mt_policy, args...>::one_shot = once; }
-            
-            virtual _connection_base<mt_policy, args...>* clone()
-            {
-                return new _connection<dest_type, mt_policy, args...>(m_pobject, m_fn,
-                                                                      _connection_base<mt_policy, args...>::one_shot);
-            }
-
-            virtual _connection_base<mt_policy, args...>* duplicate(has_slots<mt_policy>* pnewdest)
-            {
-                return new _connection<dest_type, mt_policy, args...>((dest_type *) pnewdest, m_fn,
-                                                                      _connection_base<mt_policy, args...>::one_shot);
-            }
-
-            virtual void emit(args... a)
-            {
-                m_fn(a...);
-            }
-
-            virtual has_slots<mt_policy>* getdest() const
-            {
-                return m_pobject;
-            }
-        private:
-            dest_type* m_pobject;
-            std::function<void(args...)> m_fn;
-        };
     }
 
-    template<class  mt_policy = SIGSLOT_DEFAULT_MT_POLICY>
-    class has_slots : public mt_policy
-    {
-    private:
-        typedef typename std::set<internal::_signal_base_lo<mt_policy> *> sender_set;
 
-    public:
-        has_slots() : mt_policy(), m_senders()
-        {
-            ;
-        }
-
-        has_slots(const has_slots& hs)
-                : mt_policy(hs), m_senders()
-        {
-            internal::lock_block<mt_policy> lock(this);
-            for (auto i : hs.m_senders) {
-                i->slot_duplicate(&hs, this);
-                m_senders.insert(i);
-            }
-        }
-
-        has_slots(has_slots &&) = delete;
-
-        void signal_connect(internal::_signal_base_lo<mt_policy>* sender)
-        {
-            internal::lock_block<mt_policy> lock(this);
-            m_senders.insert(sender);
-        }
-
-        void signal_disconnect(internal::_signal_base_lo<mt_policy>* sender)
-        {
-            internal::lock_block<mt_policy> lock(this);
-            m_senders.erase(sender);
-        }
-
-        virtual ~has_slots()
-        {
-            disconnect_all();
-        }
-
-        void disconnect_all()
-        {
-            internal::lock_block<mt_policy> lock(this);
-            for (auto i : m_senders) {
-                i->slot_disconnect(this);
-            }
-
-            m_senders.erase(m_senders.begin(), m_senders.end());
-        }
-
-    private:
-        sender_set m_senders;
-    };
+#ifdef SIGSLOT_COROUTINES
+    namespace coroutines {
+        template<class... args> struct awaitable;
+        // template<> struct awaitable<class T>;
+        template<> struct awaitable<>;
+    }
+#endif
 
 
-
-    template<typename mt_policy = SIGSLOT_DEFAULT_MT_POLICY, class... args>
-    class signal : public internal::_signal_base<mt_policy, args...>
+    template<class... args>
+    class signal : public internal::_signal_base<args...>
     {
     public:
-        typedef typename internal::_signal_base<mt_policy, args...>::connections_list::const_iterator const_iterator;
+        typedef typename internal::_signal_base<args...>::connections_list::const_iterator const_iterator;
+#ifdef SIGSLOT_COROUTINES
+        std::unique_ptr<coroutines::awaitable<args...>> m_awaitable;
+#endif
         signal()
         {
             ;
         }
 
-        signal(const signal<mt_policy, args...>& s)
-        : internal::_signal_base<mt_policy, args...>(s)
+        signal(const signal<args...>& s)
+        : internal::_signal_base<args...>(s)
         {
             ;
         }
 
-        template<class desttype>
-        void connect(desttype *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
+        void connect(has_slots *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
-            this->test(pclass); // Ensure it's the same mt_policy.
-            internal::lock_block<mt_policy> lock(this);
-            internal::_connection<desttype, mt_policy, args...> *conn = new internal::_connection<desttype, mt_policy, args...>(
+            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
+            auto *conn = new internal::_connection<args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
             pclass->signal_connect(this);
@@ -537,7 +281,7 @@ namespace sigslot {
         // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
-            internal::lock_block<mt_policy> lock(this);
+            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
             const_iterator itNext, it = this->m_connected_slots.begin();
             const_iterator itEnd = this->m_connected_slots.end();
 
@@ -553,8 +297,15 @@ namespace sigslot {
 
                 it = itNext;
             }
+#ifdef SIGSLOT_COROUTINES
+            if (m_awaitable) {
+                std::unique_ptr<coroutines::awaitable<args...>> awaitable(std::move(m_awaitable));
+                m_awaitable.reset();
+                awaitable->resolve(a...);
+            }
+#endif
 
-            this->m_connected_slots.remove_if([this](internal::_connection_base<mt_policy, args...> *x) {
+            this->m_connected_slots.remove_if([this](internal::_connection<args...> *x) {
                 if (x->expired) {
                     x->getdest()->signal_disconnect(this);
                     delete x;
@@ -572,8 +323,105 @@ namespace sigslot {
         {
             this->emit(a...);
         }
+
+#ifdef SIGSLOT_COROUTINES
+        auto & operator co_await() {
+            if (!m_awaitable) {
+                m_awaitable = std::make_unique<coroutines::awaitable<args...>>();
+            }
+            return *m_awaitable;
+        }
+#endif
     };
 
+
+#ifdef SIGSLOT_COROUTINES
+    namespace coroutines {
+        // Generic variant uses a tuple to pass back.
+        template<class... args>
+        struct awaitable {
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            std::optional<std::tuple<args...>> payload;
+
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) = delete;
+
+            bool await_ready() {
+                return false;
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting.push_back(h);
+            }
+
+            auto await_resume() {
+                return *payload;
+            }
+
+            void resolve(args... a) {
+                payload.emplace(a...);
+                for (auto & awaiter : awaiting) awaiter.resume();
+            }
+        };
+
+        // Single argument version uses a bare T
+        template<typename T>
+        struct awaitable<T> : public has_slots {
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            std::optional<T> payload;
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) = delete;
+
+            bool await_ready() {
+                return false;
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting.push_back(h);
+            }
+
+            auto await_resume() {
+                return *payload;
+            }
+
+            void resolve(T a) {
+                payload.emplace(a);
+                for (auto & awaiter : awaiting) awaiter.resume();
+            }
+        };
+
+        // Zero argument version uses nothing, of course.
+        template<>
+        struct awaitable<> {
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) = delete;
+
+            bool await_ready() {
+                return false;
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting.push_back(h);
+            }
+
+            bool await_resume() {
+                return true;
+            }
+
+            void resolve() {
+                for (auto & awaiter : awaiting ) awaiter.resume();
+            }
+        };
+
+    }
+#endif
 } // namespace sigslot
 
 #endif // SIGSLOT_H__
