@@ -60,6 +60,7 @@ struct tasklet {
 };
 
 #include <iostream>
+#include <string>
 
 /**
  * We'll use some global signals here.
