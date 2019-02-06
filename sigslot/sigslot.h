@@ -348,7 +348,7 @@ namespace sigslot {
             awaitable(awaitable && other) = delete;
 
             bool await_ready() {
-                return false;
+                return payload.has_value();
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
@@ -376,7 +376,7 @@ namespace sigslot {
             awaitable(awaitable && other) = delete;
 
             bool await_ready() {
-                return false;
+                return payload.has_value();
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
@@ -398,13 +398,13 @@ namespace sigslot {
         template<typename T>
         struct awaitable<T&> : public has_slots {
             std::vector<std::experimental::coroutine_handle<>> awaiting;
-            T * payload;
+            T *payload = nullptr;
             awaitable() = default;
             awaitable(awaitable const &) = delete;
             awaitable(awaitable && other) = delete;
 
             bool await_ready() {
-                return false;
+                return payload;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
@@ -426,12 +426,13 @@ namespace sigslot {
         template<>
         struct awaitable<> {
             std::vector<std::experimental::coroutine_handle<>> awaiting;
+            bool ready = false;
             awaitable() = default;
             awaitable(awaitable const &) = delete;
             awaitable(awaitable && other) = delete;
 
             bool await_ready() {
-                return false;
+                return ready;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
@@ -439,12 +440,13 @@ namespace sigslot {
                 awaiting.push_back(h);
             }
 
-            bool await_resume() {
-                return true;
+            void await_resume() {
+                return;
             }
 
             void resolve() {
-                for (auto & awaiter : awaiting ) awaiter.resume();
+                ready = true;
+                for (auto & awaiter : awaiting) awaiter.resume();
             }
         };
 
