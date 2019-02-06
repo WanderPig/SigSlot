@@ -120,7 +120,7 @@ namespace sigslot {
         {
         public:
             _connection(has_slots *pobject, std::function<void(args... a)> fn, bool once)
-                    : m_pobject(pobject), m_fn(fn), one_shot(once) {}
+                    : one_shot(once), m_pobject(pobject), m_fn(fn) {}
 
             _connection<args...>* clone()
             {
@@ -390,6 +390,34 @@ namespace sigslot {
 
             void resolve(T a) {
                 payload.emplace(a);
+                for (auto & awaiter : awaiting) awaiter.resume();
+            }
+        };
+
+        // Single argument reference version uses a bare T &
+        template<typename T>
+        struct awaitable<T&> : public has_slots {
+            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            T * payload;
+            awaitable() = default;
+            awaitable(awaitable const &) = delete;
+            awaitable(awaitable && other) = delete;
+
+            bool await_ready() {
+                return false;
+            }
+
+            void await_suspend(std::experimental::coroutine_handle<> h) {
+                // The awaiting coroutine is already suspended.
+                awaiting.push_back(h);
+            }
+
+            auto & await_resume() {
+                return *payload;
+            }
+
+            void resolve(T & a) {
+                payload = &a;
                 for (auto & awaiter : awaiting) awaiter.resume();
             }
         };
