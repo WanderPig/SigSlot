@@ -71,17 +71,8 @@ namespace sigslot {
             ;
         }
 
-        has_slots(const has_slots& hs)
-                : m_senders()
-        {
-            std::lock_guard<std::mutex> lock(m_barrier);
-            for (auto i : hs.m_senders) {
-                i->slot_duplicate(&hs, this);
-                m_senders.insert(i);
-            }
-        }
-
-        has_slots(has_slots &&) = delete;
+        has_slots(const has_slots& hs) = delete;
+        has_slots(has_slots && hs) = delete;
 
         void signal_connect(internal::_signal_base_lo* sender)
         {
@@ -248,9 +239,7 @@ namespace sigslot {
     {
     public:
         typedef typename internal::_signal_base<args...>::connections_list::const_iterator const_iterator;
-#ifdef SIGSLOT_COROUTINES
-        std::unique_ptr<coroutines::awaitable<args...>> m_awaitable;
-#endif
+
         signal()
         {
             ;
@@ -297,12 +286,13 @@ namespace sigslot {
 
                 it = itNext;
             }
+
 #ifdef SIGSLOT_COROUTINES
-            if (m_awaitable) {
-                std::unique_ptr<coroutines::awaitable<args...>> awaitable(std::move(m_awaitable));
-                m_awaitable.reset();
+            std::set<coroutines::awaitable<args...> *> awaitables(std::move(m_awaitables));
+            for (auto * awaitable : awaitables) {
                 awaitable->resolve(a...);
             }
+            awaitables.clear();
 #endif
 
             this->m_connected_slots.remove_if([this](internal::_connection<args...> *x) {
@@ -325,11 +315,18 @@ namespace sigslot {
         }
 
 #ifdef SIGSLOT_COROUTINES
-        auto & operator co_await() {
-            if (!m_awaitable) {
-                m_awaitable = std::make_unique<coroutines::awaitable<args...>>();
-            }
-            return *m_awaitable;
+        std::set<coroutines::awaitable<args...> *> m_awaitables;
+
+        auto operator co_await() {
+            return coroutines::awaitable<args...>(*this);
+        }
+
+        void await_(coroutines::awaitable<args...> *awaitable) {
+            m_awaitables.insert(awaitable);
+        }
+
+        void unawait(coroutines::awaitable<args...> * awaitable) {
+            m_awaitables.erase(awaitable);
         }
 #endif
     };
@@ -340,20 +337,27 @@ namespace sigslot {
         // Generic variant uses a tuple to pass back.
         template<class... args>
         struct awaitable {
-            std::vector<std::experimental::coroutine_handle<>> awaiting;
+            signal<args...> & signal;
+            std::experimental::coroutine_handle<> awaiting = nullptr;
             std::optional<std::tuple<args...>> payload;
 
-            awaitable() = default;
-            awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) = delete;
+            explicit awaitable(::sigslot::signal<args...> & s) : signal(s) {
+                signal.await_(this);
+            }
+            awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
+                signal.await_(this);
+            }
+            awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
+                signal.await_(this);
+            }
 
             bool await_ready() {
-                return false;
+                return payload.has_value();
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting.push_back(h);
+                awaiting = h;
             }
 
             auto await_resume() {
@@ -362,26 +366,37 @@ namespace sigslot {
 
             void resolve(args... a) {
                 payload.emplace(a...);
-                for (auto & awaiter : awaiting) awaiter.resume();
+                if (awaiting) awaiting.resume();
+            }
+
+            ~awaitable() {
+                signal.unawait(this);
             }
         };
 
         // Single argument version uses a bare T
         template<typename T>
-        struct awaitable<T> : public has_slots {
-            std::vector<std::experimental::coroutine_handle<>> awaiting;
+        struct awaitable<T> {
+            signal<T> & signal;
+            std::experimental::coroutine_handle<> awaiting = nullptr;
             std::optional<T> payload;
-            awaitable() = default;
-            awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) = delete;
+            explicit awaitable(::sigslot::signal<T> & s) : signal(s) {
+                signal.await_(this);
+            }
+            awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
+                signal.await_(this);
+            }
+            awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
+                signal.await_(this);
+            }
 
             bool await_ready() {
-                return false;
+                return payload.has_value();
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting.push_back(h);
+                awaiting = h;
             }
 
             auto await_resume() {
@@ -390,26 +405,37 @@ namespace sigslot {
 
             void resolve(T a) {
                 payload.emplace(a);
-                for (auto & awaiter : awaiting) awaiter.resume();
+                if (awaiting) awaiting.resume();
+            }
+
+            ~awaitable() {
+                signal.unawait(this);
             }
         };
 
         // Single argument reference version uses a bare T &
         template<typename T>
-        struct awaitable<T&> : public has_slots {
-            std::vector<std::experimental::coroutine_handle<>> awaiting;
-            T * payload;
-            awaitable() = default;
-            awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) = delete;
+        struct awaitable<T&> {
+            signal<T&> & signal;
+            std::experimental::coroutine_handle<> awaiting = nullptr;
+            T *payload = nullptr;
+            explicit awaitable(::sigslot::signal<T&> & s) : signal(s) {
+                signal.await_(this);
+            }
+            awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
+                signal.await_(this);
+            }
+            awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
+                signal.await_(this);
+            }
 
             bool await_ready() {
-                return false;
+                return payload;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting.push_back(h);
+                awaiting = h;
             }
 
             auto & await_resume() {
@@ -418,33 +444,50 @@ namespace sigslot {
 
             void resolve(T & a) {
                 payload = &a;
-                for (auto & awaiter : awaiting) awaiter.resume();
+                if (awaiting) awaiting.resume();
+            }
+
+            ~awaitable() {
+                signal.unawait(this);
             }
         };
 
         // Zero argument version uses nothing, of course.
         template<>
         struct awaitable<> {
-            std::vector<std::experimental::coroutine_handle<>> awaiting;
-            awaitable() = default;
-            awaitable(awaitable const &) = delete;
-            awaitable(awaitable && other) = delete;
+            signal<> & signal;
+            std::experimental::coroutine_handle<> awaiting = nullptr;
+            bool ready = false;
+            explicit awaitable(::sigslot::signal<> & s) : signal(s) {
+                signal.await_(this);
+            }
+            awaitable(awaitable const & a) : signal(a.signal), ready(a.ready) {
+                signal.await_(this);
+            }
+            awaitable(awaitable && other) noexcept : signal(other.signal), ready(std::move(other.ready)) {
+                signal.await_(this);
+            }
 
             bool await_ready() {
-                return false;
+                return ready;
             }
 
             void await_suspend(std::experimental::coroutine_handle<> h) {
                 // The awaiting coroutine is already suspended.
-                awaiting.push_back(h);
+                awaiting = h;
             }
 
-            bool await_resume() {
-                return true;
+            void await_resume() {
+                return;
             }
 
             void resolve() {
-                for (auto & awaiter : awaiting ) awaiter.resume();
+                ready = true;
+                if (awaiting) awaiting.resume();
+            }
+
+            ~awaitable() {
+                signal.unawait(this);
             }
         };
 
