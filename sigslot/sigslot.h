@@ -321,7 +321,7 @@ namespace sigslot {
             return coroutines::awaitable<args...>(*this);
         }
 
-        void await(coroutines::awaitable<args...> * awaitable) {
+        void await_(coroutines::awaitable<args...> *awaitable) {
             m_awaitables.insert(awaitable);
         }
 
@@ -342,13 +342,13 @@ namespace sigslot {
             std::optional<std::tuple<args...>> payload;
 
             explicit awaitable(::sigslot::signal<args...> & s) : signal(s) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
-                signal.await(this);
+                signal.await_(this);
             }
 
             bool await_ready() {
@@ -381,13 +381,13 @@ namespace sigslot {
             std::experimental::coroutine_handle<> awaiting = nullptr;
             std::optional<T> payload;
             explicit awaitable(::sigslot::signal<T> & s) : signal(s) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
-                signal.await(this);
+                signal.await_(this);
             }
 
             bool await_ready() {
@@ -420,13 +420,13 @@ namespace sigslot {
             std::experimental::coroutine_handle<> awaiting = nullptr;
             T *payload = nullptr;
             explicit awaitable(::sigslot::signal<T&> & s) : signal(s) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable const & a) : signal(a.signal), payload(a.payload) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable && other) noexcept : signal(other.signal), payload(std::move(other.payload)) {
-                signal.await(this);
+                signal.await_(this);
             }
 
             bool await_ready() {
@@ -459,13 +459,13 @@ namespace sigslot {
             std::experimental::coroutine_handle<> awaiting = nullptr;
             bool ready = false;
             explicit awaitable(::sigslot::signal<> & s) : signal(s) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable const & a) : signal(a.signal), ready(a.ready) {
-                signal.await(this);
+                signal.await_(this);
             }
             awaitable(awaitable && other) noexcept : signal(other.signal), ready(std::move(other.ready)) {
-                signal.await(this);
+                signal.await_(this);
             }
 
             bool await_ready() {
