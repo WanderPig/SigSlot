@@ -50,7 +50,7 @@ namespace sigslot {
     namespace internal {
         class _signal_base_lo {
         protected:
-            std::mutex m_barrier;
+            std::recursive_mutex m_barrier;
         public:
             virtual void slot_disconnect(has_slots *pslot) = 0;
 
@@ -62,7 +62,7 @@ namespace sigslot {
     class has_slots
     {
     private:
-        std::mutex m_barrier;
+        std::recursive_mutex m_barrier;
         typedef typename std::set<internal::_signal_base_lo *> sender_set;
 
     public:
@@ -76,13 +76,13 @@ namespace sigslot {
 
         void signal_connect(internal::_signal_base_lo* sender)
         {
-            std::lock_guard<std::mutex> lock(m_barrier);
+            std::lock_guard<std::recursive_mutex> lock(m_barrier);
             m_senders.insert(sender);
         }
 
         void signal_disconnect(internal::_signal_base_lo* sender)
         {
-            std::lock_guard<std::mutex> lock(m_barrier);
+            std::lock_guard<std::recursive_mutex> lock(m_barrier);
             m_senders.erase(sender);
         }
 
@@ -93,7 +93,7 @@ namespace sigslot {
 
         void disconnect_all()
         {
-            std::lock_guard<std::mutex> lock(m_barrier);
+            std::lock_guard<std::recursive_mutex> lock(m_barrier);
             for (auto i : m_senders) {
                 i->slot_disconnect(this);
             }
@@ -154,7 +154,7 @@ namespace sigslot {
             _signal_base(const _signal_base& s)
                     : _signal_base_lo(s), m_connected_slots()
             {
-                std::lock_guard<std::mutex> lock(m_barrier);
+                std::lock_guard<std::recursive_mutex> lock(m_barrier);
                 for (auto i : s.m_connected_slots) {
                     i->getdest()->signal_connect(this);
                     m_connected_slots.push_back(i->clone());
@@ -170,7 +170,7 @@ namespace sigslot {
 
             void disconnect_all()
             {
-                std::lock_guard<std::mutex> lock(m_barrier);
+                std::lock_guard<std::recursive_mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     i->getdest()->signal_disconnect(this);
                     delete i;
@@ -180,7 +180,7 @@ namespace sigslot {
 
             void disconnect(has_slots* pclass)
             {
-                std::lock_guard<std::mutex> lock(m_barrier);
+                std::lock_guard<std::recursive_mutex> lock(m_barrier);
                 bool found{false};
                 m_connected_slots.remove_if([pclass, &found](_connection<args...> * x) {
                     if (x->getdest() == pclass) {
@@ -195,7 +195,7 @@ namespace sigslot {
 
             void slot_disconnect(has_slots* pslot) final
             {
-                std::lock_guard<std::mutex> lock(m_barrier);
+                std::lock_guard<std::recursive_mutex> lock(m_barrier);
                 m_connected_slots.remove_if(
                     [pslot](_connection<args...> * x) {
                         if (x->getdest() == pslot) {
@@ -209,7 +209,7 @@ namespace sigslot {
 
             void slot_duplicate(const has_slots* oldtarget, has_slots* newtarget) final
             {
-                std::lock_guard<std::mutex> lock(m_barrier);
+                std::lock_guard<std::recursive_mutex> lock(m_barrier);
                 for (auto i : m_connected_slots) {
                     if(i->getdest() == oldtarget)
                     {
@@ -228,8 +228,6 @@ namespace sigslot {
 #ifdef SIGSLOT_COROUTINES
     namespace coroutines {
         template<class... args> struct awaitable;
-        // template<> struct awaitable<class T>;
-        template<> struct awaitable<>;
     }
 #endif
 
@@ -253,7 +251,7 @@ namespace sigslot {
 
         void connect(has_slots *pclass, std::function<void(args...)> &&fn, bool one_shot = false)
         {
-            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
+            std::lock_guard<std::recursive_mutex> lock{internal::_signal_base<args...>::m_barrier};
             auto *conn = new internal::_connection<args...>(
                     pclass, fn, one_shot);
             this->m_connected_slots.push_back(conn);
@@ -270,7 +268,15 @@ namespace sigslot {
         // This code uses the long-hand because it assumes it may mutate the list.
         void emit(args... a)
         {
-            std::lock_guard<std::mutex> lock{internal::_signal_base<args...>::m_barrier};
+#ifdef SIGSLOT_COROUTINES
+            std::set<coroutines::awaitable<args...> *> awaitables(std::move(m_awaitables));
+            for (auto * awaitable : awaitables) {
+                awaitable->resolve(a...);
+            }
+            awaitables.clear();
+#endif
+
+            std::lock_guard<std::recursive_mutex> lock{internal::_signal_base<args...>::m_barrier};
             const_iterator itNext, it = this->m_connected_slots.begin();
             const_iterator itEnd = this->m_connected_slots.end();
 
@@ -286,14 +292,6 @@ namespace sigslot {
 
                 it = itNext;
             }
-
-#ifdef SIGSLOT_COROUTINES
-            std::set<coroutines::awaitable<args...> *> awaitables(std::move(m_awaitables));
-            for (auto * awaitable : awaitables) {
-                awaitable->resolve(a...);
-            }
-            awaitables.clear();
-#endif
 
             this->m_connected_slots.remove_if([this](internal::_connection<args...> *x) {
                 if (x->expired) {
